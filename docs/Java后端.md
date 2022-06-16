@@ -1,4 +1,4 @@
-# Java 中 IO 流分为几种?BIO,NIO,AIO 有什么区别?
+# java 中 IO 流分为几种?BIO,NIO,AIO 有什么区别?
 
 ## IO 流分为几种
 
@@ -167,3 +167,1217 @@ public class SynchronizedTest02 {
 下面是这几种锁的对比：
 
 ![img](images/1620-16496642420274.png)
+
+# jvm 垃圾回收详解
+
+## 写在前面
+
+### 本节常见面试题
+
+问题答案在文中都有提到
+
+- 如何判断对象是否死亡（两种方法）。
+- 简单的介绍一下强引用、软引用、弱引用、虚引用（虚引用与软引用和弱引用的区别、使用软引用能带来的好处）。
+- 如何判断一个常量是废弃常量
+- 如何判断一个类是无用的类
+- 垃圾收集有哪些算法，各自的特点？
+- HotSpot 为什么要分为新生代和老年代？
+- 常见的垃圾回收器有哪些？
+- 介绍一下 CMS,G1 收集器。
+- Minor Gc 和 Full GC 有什么不同呢？
+
+### 本文导火索
+
+![img](images/29176325.d3640368.png)
+
+当需要排查各种内存溢出问题、当垃圾收集成为系统达到更高并发的瓶颈时，我们就需要对这些“自动化”的技术实施必要的监控和调节。
+
+## 1 揭开 jvm 内存分配与回收的神秘面纱
+
+Java 的自动内存管理主要是针对对象内存的回收和对象内存的分配。同时，Java 自动内存管理最核心的功能是 **堆** 内存中对象的分配与回收。
+
+Java 堆是垃圾收集器管理的主要区域，因此也被称作**GC 堆（Garbage Collected Heap）**.从垃圾回收的角度，由于现在收集器基本都采用分代垃圾收集算法，所以 Java 堆还可以细分为：新生代和老年代：再细致一点有：Eden 空间、From Survivor、To Survivor 空间等。**进一步划分的目的是更好地回收内存，或者更快地分配内存。**
+
+**堆空间的基本结构：**
+
+![img](images/01d330d8-2710-4fad-a91c-7bbbfaaefc0e.c5bf5d75.png)
+
+上图所示的 Eden 区、From Survivor0("From") 区、To Survivor1("To") 区都属于新生代，Old Memory 区属于老年代。
+
+大部分情况，对象都会首先在 Eden 区域分配，在一次新生代垃圾回收后，如果对象还存活，则会进入 s0 或者 s1，并且对象的年龄还会加 1(Eden 区->Survivor 区后对象的初始年龄变为 1)，当它的年龄增加到一定程度（默认为大于 15 岁），就会被晋升到老年代中。对象晋升到老年代的年龄阈值，可以通过参数 `-XX:MaxTenuringThreshold` 来设置默认值，这个值会在虚拟机运行过程中进行调整，可以通过`-XX:+PrintTenuringDistribution`来打印出当次 GC 后的 Threshold。
+
+> **🐛 修正（参见：[issue552](https://github.com/Snailclimb/JavaGuide/issues/552)）**：“Hotspot 遍历所有对象时，按照年龄从小到大对其所占用的大小进行累积，当累积的某个年龄大小超过了 survivor 区的一半时，取这个年龄和 MaxTenuringThreshold 中更小的一个值，作为新的晋升年龄阈值”。
+>
+> **动态年龄计算的代码如下**
+>
+> ```c
+> uint ageTable::compute_tenuring_threshold(size_t survivor_capacity) {
+> //survivor_capacity是survivor空间的大小
+> size_t desired_survivor_size = (size_t)((((double)survivor_capacity)*TargetSurvivorRatio)/100);
+> size_t total = 0;
+> uint age = 1;
+> while (age < table_size) {
+> //sizes数组是每个年龄段对象大小
+> total += sizes[age];
+> if (total > desired_survivor_size) {
+>    break;
+> }
+> age++;
+> }
+> uint result = age < MaxTenuringThreshold ? age : MaxTenuringThreshold;
+> ...
+> }
+> ```
+
+经过这次 GC 后，Eden 区和"From"区已经被清空。这个时候，"From"和"To"会交换他们的角色，也就是新的"To"就是上次 GC 前的“From”，新的"From"就是上次 GC 前的"To"。不管怎样，都会保证名为 To 的 Survivor 区域是空的。Minor GC 会一直重复这样的过程，在这个过程中，有可能当次 Minor GC 后，Survivor 的"From"区域空间不够用，有一些还达不到进入老年代条件的实例放不下，则放不下的部分会提前进入老年代。
+
+接下来我们提供一个调试脚本来测试这个过程。
+
+**调试代码参数如下**
+
+```properties
+-verbose:gc
+-Xmx200M
+-Xms200M
+-Xmn50M
+-XX:+PrintGCDetails
+-XX:TargetSurvivorRatio=60
+-XX:+PrintTenuringDistribution
+-XX:+PrintGCDetails
+-XX:+PrintGCDateStamps
+-XX:MaxTenuringThreshold=3
+-XX:+UseConcMarkSweepGC
+-XX:+UseParNewGC
+```
+
+**示例代码如下：**
+
+```java
+/*
+* 本实例用于java GC以后，新生代survivor区域的变化，以及晋升到老年代的时间和方式的测试代码。需要自行分步注释不需要的代码进行反复测试对比
+*
+* 由于java的main函数以及其他基础服务也会占用一些eden空间，所以要提前空跑一次main函数，来看看这部分占用。
+*
+* 自定义的代码中，我们使用堆内分配数组和栈内分配数组的方式来分别模拟不可被GC的和可被GC的资源。
+*
+*
+* */
+public class JavaGcTest {
+
+    public static void main(String[] args) throws InterruptedException {
+        //空跑一次main函数来查看java服务本身占用的空间大小，我这里是占用了3M。所以40-3=37，下面分配三个1M的数组和一个34M的垃圾数组。
+
+
+        // 为了达到TargetSurvivorRatio（期望占用的Survivor区域的大小）这个比例指定的值, 即5M*60%=3M(Desired survivor size)，
+        // 这里用1M的数组的分配来达到Desired survivor size
+        //说明: 5M为S区的From或To的大小，60%为TargetSurvivorRatio参数指定,可以更改参数获取不同的效果。
+        byte[] byte1m_1 = new byte[1 * 1024 * 1024];
+        byte[] byte1m_2 = new byte[1 * 1024 * 1024];
+        byte[] byte1m_3 = new byte[1 * 1024 * 1024];
+
+        //使用函数方式来申请空间，函数运行完毕以后，就会变成垃圾等待回收。此时应保证eden的区域占用达到100%。可以通过调整传入值来达到效果。
+        makeGarbage(34);
+
+        //再次申请一个数组，因为eden已经满了，所以这里会触发Minor GC
+        byte[] byteArr = new byte[10*1024*1024];
+        // 这次Minor Gc时, 三个1M的数组因为尚有引用，所以进入From区域（因为是第一次GC）age为1
+        // 且由于From区已经占用达到了60%(-XX:TargetSurvivorRatio=60), 所以会重新计算对象晋升的age。
+        // 计算方法见上文，计算出age：min(age, MaxTenuringThreshold) = 1，输出中会有Desired survivor size 3145728 bytes, new threshold 1 (max 3)字样
+        //新的数组byteArr进入eden区域。
+
+
+        //再次触发垃圾回收，证明三个1M的数组会因为其第二次回收后age为2，大于上一次计算出的new threshold 1，所以进入老年代。
+        //而byteArr因为超过survivor的单个区域，直接进入了老年代。
+        makeGarbage(34);
+    }
+    private static void makeGarbage(int size){
+        byte[] byteArrTemp = new byte[size * 1024 * 1024];
+    }
+}
+```
+
+注意:如下输出结果中老年代的信息为 `concurrent mark-sweep generation` 和以前版本略有不同。另外，还列出了某次 GC 后是否重新生成了 threshold，以及各个年龄占用空间的大小。
+
+```sh
+2021-07-01T10:41:32.257+0800: [GC (Allocation Failure) 2021-07-01T10:41:32.257+0800: [ParNew
+Desired survivor size 3145728 bytes, new threshold 1 (max 3)
+- age   1:    3739264 bytes,    3739264 total
+: 40345K->3674K(46080K), 0.0014584 secs] 40345K->3674K(199680K), 0.0015063 secs] [Times: user=0.00 sys=0.00, real=0.00 secs]
+2021-07-01T10:41:32.259+0800: [GC (Allocation Failure) 2021-07-01T10:41:32.259+0800: [ParNew
+Desired survivor size 3145728 bytes, new threshold 3 (max 3)
+: 13914K->0K(46080K), 0.0046596 secs] 13914K->13895K(199680K), 0.0046873 secs] [Times: user=0.00 sys=0.00, real=0.00 secs]
+Heap
+ par new generation   total 46080K, used 35225K [0x05000000, 0x08200000, 0x08200000)
+  eden space 40960K,  86% used [0x05000000, 0x072667f0, 0x07800000)
+  from space 5120K,   0% used [0x07800000, 0x07800000, 0x07d00000)
+  to   space 5120K,   0% used [0x07d00000, 0x07d00000, 0x08200000)
+ concurrent mark-sweep generation total 153600K, used 13895K [0x08200000, 0x11800000, 0x11800000)
+ Metaspace       used 153K, capacity 2280K, committed 2368K, reserved 4480K
+```
+
+### 1.1 对象优先在 eden 区分配
+
+目前主流的垃圾收集器都会采用分代回收算法，因此需要将堆内存分为新生代和老年代，这样我们就可以根据各个年代的特点选择合适的垃圾收集算法。
+
+大多数情况下，对象在新生代中 eden 区分配。当 eden 区没有足够空间进行分配时，虚拟机将发起一次 Minor GC.下面我们来进行实际测试以下。
+
+**测试：**
+
+```java
+public class GCTest {
+	public static void main(String[] args) {
+		byte[] allocation1, allocation2;
+		allocation1 = new byte[30900*1024];
+		//allocation2 = new byte[900*1024];
+	}
+}
+```
+
+通过以下方式运行：
+
+![img](data:image/png;base64,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)
+
+添加的参数：`-XX:+PrintGCDetails`
+
+![img](images/run-with-PrintGCDetails.38e95b14.png)
+
+运行结果 (红色字体描述有误，应该是对应于 JDK1.7 的永久代)：
+
+![img](images/28954286.jpg)
+
+从上图我们可以看出 eden 区内存几乎已经被分配完全（即使程序什么也不做，新生代也会使用 2000 多 k 内存）。假如我们再为 allocation2 分配内存会出现什么情况呢？
+
+```java
+allocation2 = new byte[900*1024];
+```
+
+![img](images/28128785.jpg)
+
+**简单解释一下为什么会出现这种情况：** 因为给 allocation2 分配内存的时候 eden 区内存几乎已经被分配完了，我们刚刚讲了当 Eden 区没有足够空间进行分配时，虚拟机将发起一次 Minor GC.GC 期间虚拟机又发现 allocation1 无法存入 Survivor 空间，所以只好通过 **分配担保机制** 把新生代的对象提前转移到老年代中去，老年代上的空间足够存放 allocation1，所以不会出现 Full GC。执行 Minor GC 后，后面分配的对象如果能够存在 eden 区的话，还是会在 eden 区分配内存。可以执行如下代码验证：
+
+```java
+public class GCTest {
+
+	public static void main(String[] args) {
+		byte[] allocation1, allocation2,allocation3,allocation4,allocation5;
+		allocation1 = new byte[32000*1024];
+		allocation2 = new byte[1000*1024];
+		allocation3 = new byte[1000*1024];
+		allocation4 = new byte[1000*1024];
+		allocation5 = new byte[1000*1024];
+	}
+}
+```
+
+### 1.2 大对象直接进入老年代
+
+大对象就是需要大量连续内存空间的对象（比如：字符串、数组）。
+
+**为什么要这样呢？**
+
+为了避免为大对象分配内存时由于分配担保机制带来的复制而降低效率。
+
+### 1.3 长期存活的对象将进入老年代
+
+既然虚拟机采用了分代收集的思想来管理内存，那么内存回收时就必须能识别哪些对象应放在新生代，哪些对象应放在老年代中。为了做到这一点，虚拟机给每个对象一个对象年龄（Age）计数器。
+
+如果对象在 Eden 出生并经过第一次 Minor GC 后仍然能够存活，并且能被 Survivor 容纳的话，将被移动到 Survivor 空间中，并将对象年龄设为 1.对象在 Survivor 中每熬过一次 MinorGC,年龄就增加 1 岁，当它的年龄增加到一定程度（默认为 15 岁），就会被晋升到老年代中。对象晋升到老年代的年龄阈值，可以通过参数 `-XX:MaxTenuringThreshold` 来设置。
+
+### 1.4 动态对象年龄判定
+
+大部分情况，对象都会首先在 Eden 区域分配，在一次新生代垃圾回收后，如果对象还存活，则会进入 s0 或者 s1，并且对象的年龄还会加 1(Eden 区->Survivor 区后对象的初始年龄变为 1)，当它的年龄增加到一定程度（默认为 15 岁），就会被晋升到老年代中。对象晋升到老年代的年龄阈值，可以通过参数 `-XX:MaxTenuringThreshold` 来设置。
+
+> 修正（[issue552](https://github.com/Snailclimb/JavaGuide/issues/552)）：“Hotspot 遍历所有对象时，按照年龄从小到大对其所占用的大小进行累积，当累积的某个年龄大小超过了 survivor 区的 50% 时（默认值是 50%，可以通过 `-XX:TargetSurvivorRatio=percent` 来设置，参见 [issue1199](https://github.com/Snailclimb/JavaGuide/issues/1199) ），取这个年龄和 MaxTenuringThreshold 中更小的一个值，作为新的晋升年龄阈值”。
+>
+> jdk8 官方文档引用 ：https://docs.oracle.com/javase/8/docs/technotes/tools/unix/java.html 。
+>
+> ![img](images/image-20210523201742303.png)
+>
+> **动态年龄计算的代码如下：**
+>
+> ```java
+> uint ageTable::compute_tenuring_threshold(size_t survivor_capacity) {
+> //survivor_capacity是survivor空间的大小
+> size_t desired_survivor_size = (size_t)((((double)survivor_capacity)*TargetSurvivorRatio)/100);
+> size_t total = 0;
+> uint age = 1;
+> while (age < table_size) {
+> //sizes数组是每个年龄段对象大小
+> total += sizes[age];
+> if (total > desired_survivor_size) {
+> break;
+> }
+> age++;
+> }
+> uint result = age < MaxTenuringThreshold ? age : MaxTenuringThreshold;
+> ...
+> }
+> ```
+>
+> 额外补充说明([issue672](https://github.com/Snailclimb/JavaGuide/issues/672))：**关于默认的晋升年龄是 15，这个说法的来源大部分都是《深入理解 Java 虚拟机》这本书。** 如果你去 Oracle 的官网阅读[相关的虚拟机参数](https://docs.oracle.com/javase/8/docs/technotes/tools/unix/java.html)，你会发现`-XX:MaxTenuringThreshold=threshold`这里有个说明
+>
+> **Sets the maximum tenuring threshold for use in adaptive GC sizing. The largest value is 15. The default value is 15 for the parallel (throughput) collector, and 6 for the CMS collector.默认晋升年龄并不都是 15，这个是要区分垃圾收集器的，CMS 就是 6.**
+
+### 1.5 主要进行 gc 的区域
+
+周志明先生在《深入理解 Java 虚拟机》第二版中 P92 如是写道：
+
+> *“老年代 GC（Major GC/Full GC），指发生在老年代的 GC……”*
+
+上面的说法已经在《深入理解 Java 虚拟机》第三版中被改正过来了。感谢 R 大的回答：
+
+![img](images/rf-hotspot-vm-gc.69291e6e.png)
+
+**总结：**
+
+针对 HotSpot VM 的实现，它里面的 GC 其实准确分类只有两大种：
+
+部分收集 (Partial GC)：
+
+- 新生代收集（Minor GC / Young GC）：只对新生代进行垃圾收集；
+- 老年代收集（Major GC / Old GC）：只对老年代进行垃圾收集。需要注意的是 Major GC 在有的语境中也用于指代整堆收集；
+- 混合收集（Mixed GC）：对整个新生代和部分老年代进行垃圾收集。
+
+整堆收集 (Full GC)：收集整个 Java 堆和方法区。
+
+### 1.6 空间分配担保
+
+空间分配担保是为了确保在 Minor GC 之前老年代本身还有容纳新生代所有对象的剩余空间。
+
+《深入理解 Java 虚拟机》第三章对于空间分配担保的描述如下：
+
+> JDK 6 Update 24 之前，在发生 Minor GC 之前，虚拟机必须先检查老年代最大可用的连续空间是否大于新生代所有对象总空间，如果这个条件成立，那这一次 Minor GC 可以确保是安全的。如果不成立，则虚拟机会先查看 `-XX:HandlePromotionFailure` 参数的设置值是否允许担保失败(Handle Promotion Failure);如果允许，那会继续检查老年代最大可用的连续空间是否大于历次晋升到老年代对象的平均大小，如果大于，将尝试进行一次 Minor GC，尽管这次 Minor GC 是有风险的;如果小于，或者 `-XX: HandlePromotionFailure` 设置不允许冒险，那这时就要改为进行一次 Full GC。
+>
+> JDK 6 Update 24 之后的规则变为只要老年代的连续空间大于新生代对象总大小或者历次晋升的平均大小，就会进行 Minor GC，否则将进行 Full GC。
+
+## 2 对象已经死亡？
+
+堆中几乎放着所有的对象实例，对堆垃圾回收前的第一步就是要判断哪些对象已经死亡（即不能再被任何途径使用的对象）。
+
+### 2.1 引用计数法
+
+给对象中添加一个引用计数器，每当有一个地方引用它，计数器就加 1；当引用失效，计数器就减 1；任何时候计数器为 0 的对象就是不可能再被使用的。
+
+**这个方法实现简单，效率高，但是目前主流的虚拟机中并没有选择这个算法来管理内存，其最主要的原因是它很难解决对象之间相互循环引用的问题。** 所谓对象之间的相互引用问题，如下面代码所示：除了对象 objA 和 objB 相互引用着对方之外，这两个对象之间再无任何引用。但是他们因为互相引用对方，导致它们的引用计数器都不为 0，于是引用计数算法无法通知 GC 回收器回收他们。
+
+```java
+public class ReferenceCountingGc {
+    Object instance = null;
+	public static void main(String[] args) {
+		ReferenceCountingGc objA = new ReferenceCountingGc();
+		ReferenceCountingGc objB = new ReferenceCountingGc();
+		objA.instance = objB;
+		objB.instance = objA;
+		objA = null;
+		objB = null;
+
+	}
+}
+```
+
+###  2.2 可达性分析算法
+
+这个算法的基本思想就是通过一系列的称为 **“GC Roots”** 的对象作为起点，从这些节点开始向下搜索，节点所走过的路径称为引用链，当一个对象到 GC Roots 没有任何引用链相连的话，则证明此对象是不可用的，需要被回收。
+
+下图中的 `Object 6 ~ Object 10` 之间虽有引用关系，但它们到 GC Roots 不可达，因此为需要被回收的对象。
+
+![可达性分析算法](images/jvm-gc-roots.39234b20.png)
+
+**哪些对象可以作为 GC Roots 呢？**
+
+- 虚拟机栈(栈帧中的本地变量表)中引用的对象
+- 本地方法栈(Native 方法)中引用的对象
+- 方法区中类静态属性引用的对象
+- 方法区中常量引用的对象
+- 所有被同步锁持有的对象
+
+**对象可以被回收，就代表一定会被回收吗？**
+
+即使在可达性分析法中不可达的对象，也并非是“非死不可”的，这时候它们暂时处于“缓刑阶段”，要真正宣告一个对象死亡，至少要经历两次标记过程；可达性分析法中不可达的对象被第一次标记并且进行一次筛选，筛选的条件是此对象是否有必要执行 `finalize` 方法。当对象没有覆盖 `finalize` 方法，或 `finalize` 方法已经被虚拟机调用过时，虚拟机将这两种情况视为没有必要执行。
+
+被判定为需要执行的对象将会被放在一个队列中进行第二次标记，除非这个对象与引用链上的任何一个对象建立关联，否则就会被真的回收。
+
+> `Object` 类中的 `finalize` 方法一直被认为是一个糟糕的设计，成为了 Java 语言的负担，影响了 Java 语言的安全和 GC 的性能。JDK9 版本及后续版本中各个类中的 `finalize` 方法会被逐渐弃用移除。忘掉它的存在吧！
+>
+> 参考：
+>
+> - [JEP 421: Deprecate Finalization for Removal](https://openjdk.java.net/jeps/421)
+> - [是时候忘掉 finalize 方法了](https://mp.weixin.qq.com/s/LW-paZAMD08DP_3-XCUxmg)
+
+### 2.3 再谈引用
+
+无论是通过引用计数法判断对象引用数量，还是通过可达性分析法判断对象的引用链是否可达，判定对象的存活都与“引用”有关。
+
+JDK1.2 之前，Java 中引用的定义很传统：如果 reference 类型的数据存储的数值代表的是另一块内存的起始地址，就称这块内存代表一个引用。
+
+JDK1.2 以后，Java 对引用的概念进行了扩充，将引用分为强引用、软引用、弱引用、虚引用四种（引用强度逐渐减弱）
+
+**1．强引用（StrongReference）**
+
+以前我们使用的大部分引用实际上都是强引用，这是使用最普遍的引用。如果一个对象具有强引用，那就类似于**必不可少的生活用品**，垃圾回收器绝不会回收它。当内存空间不足，Java 虚拟机宁愿抛出 OutOfMemoryError 错误，使程序异常终止，也不会靠随意回收具有强引用的对象来解决内存不足问题。
+
+**2．软引用（SoftReference）**
+
+如果一个对象只具有软引用，那就类似于**可有可无的生活用品**。如果内存空间足够，垃圾回收器就不会回收它，如果内存空间不足了，就会回收这些对象的内存。只要垃圾回收器没有回收它，该对象就可以被程序使用。软引用可用来实现内存敏感的高速缓存。
+
+软引用可以和一个引用队列（ReferenceQueue）联合使用，如果软引用所引用的对象被垃圾回收，JAVA 虚拟机就会把这个软引用加入到与之关联的引用队列中。
+
+**3．弱引用（WeakReference）**
+
+如果一个对象只具有弱引用，那就类似于**可有可无的生活用品**。弱引用与软引用的区别在于：只具有弱引用的对象拥有更短暂的生命周期。在垃圾回收器线程扫描它所管辖的内存区域的过程中，一旦发现了只具有弱引用的对象，不管当前内存空间足够与否，都会回收它的内存。不过，由于垃圾回收器是一个优先级很低的线程， 因此不一定会很快发现那些只具有弱引用的对象。
+
+弱引用可以和一个引用队列（ReferenceQueue）联合使用，如果弱引用所引用的对象被垃圾回收，Java 虚拟机就会把这个弱引用加入到与之关联的引用队列中。
+
+**4．虚引用（PhantomReference）**
+
+"虚引用"顾名思义，就是形同虚设，与其他几种引用都不同，虚引用并不会决定对象的生命周期。如果一个对象仅持有虚引用，那么它就和没有任何引用一样，在任何时候都可能被垃圾回收。
+
+**虚引用主要用来跟踪对象被垃圾回收的活动**。
+
+**虚引用与软引用和弱引用的一个区别在于：** 虚引用必须和引用队列（ReferenceQueue）联合使用。当垃圾回收器准备回收一个对象时，如果发现它还有虚引用，就会在回收对象的内存之前，把这个虚引用加入到与之关联的引用队列中。程序可以通过判断引用队列中是否已经加入了虚引用，来了解被引用的对象是否将要被垃圾回收。程序如果发现某个虚引用已经被加入到引用队列，那么就可以在所引用的对象的内存被回收之前采取必要的行动。
+
+特别注意，在程序设计中一般很少使用弱引用与虚引用，使用软引用的情况较多，这是因为**软引用可以加速 jvm 对垃圾内存的回收速度，可以维护系统的运行安全，防止内存溢出（OutOfMemory）等问题的产生**。
+
+### 2.5 如何判断一个常量是废弃常量？
+
+运行时常量池主要回收的是废弃的常量。那么，我们如何判断一个常量是废弃常量呢？
+
+> **🐛 修正（参见：[issue747](https://github.com/Snailclimb/JavaGuide/issues/747)，[reference](https://blog.csdn.net/q5706503/article/details/84640762)）** ：
+>
+> 1. **JDK1.7 之前运行时常量池逻辑包含字符串常量池存放在方法区, 此时 hotspot 虚拟机对方法区的实现为永久代**
+> 2. **JDK1.7 字符串常量池被从方法区拿到了堆中, 这里没有提到运行时常量池,也就是说字符串常量池被单独拿到堆,运行时常量池剩下的东西还在方法区, 也就是 hotspot 中的永久代** 。
+> 3. **JDK1.8 hotspot 移除了永久代用元空间(Metaspace)取而代之, 这时候字符串常量池还在堆, 运行时常量池还在方法区, 只不过方法区的实现从永久代变成了元空间(Metaspace)**
+
+假如在字符串常量池中存在字符串 "abc"，如果当前没有任何 String 对象引用该字符串常量的话，就说明常量 "abc" 就是废弃常量，如果这时发生内存回收的话而且有必要的话，"abc" 就会被系统清理出常量池了。
+
+### 2.6 如何判断一个类是无用的类
+
+方法区主要回收的是无用的类，那么如何判断一个类是无用的类的呢？
+
+判定一个常量是否是“废弃常量”比较简单，而要判定一个类是否是“无用的类”的条件则相对苛刻许多。类需要同时满足下面 3 个条件才能算是 **“无用的类”** ：
+
+- 该类所有的实例都已经被回收，也就是 Java 堆中不存在该类的任何实例。
+- 加载该类的 `ClassLoader` 已经被回收。
+- 该类对应的 `java.lang.Class` 对象没有在任何地方被引用，无法在任何地方通过反射访问该类的方法。
+
+虚拟机可以对满足上述 3 个条件的无用类进行回收，这里说的仅仅是“可以”，而并不是和对象一样不使用了就会必然被回收。
+
+## 3 垃圾收集算法
+
+### 3.1 标记-清除算法
+
+该算法分为“标记”和“清除”阶段：首先标记出所有不需要回收的对象，在标记完成后统一回收掉所有没有被标记的对象。它是最基础的收集算法，后续的算法都是对其不足进行改进得到。这种垃圾收集算法会带来两个明显的问题：
+
+1. **效率问题**
+2. **空间问题（标记清除后会产生大量不连续的碎片）**
+
+![img](images/标记-清除算法.c1fbd0fe.jpeg)
+
+### 3.2 标记-复制算法
+
+为了解决效率问题，“标记-复制”收集算法出现了。它可以将内存分为大小相同的两块，每次使用其中的一块。当这一块的内存使用完后，就将还存活的对象复制到另一块去，然后再把使用的空间一次清理掉。这样就使每次的内存回收都是对内存区间的一半进行回收。
+
+![复制算法](images/90984624.e8c186ae.png)
+
+### 3.3 标记-整理算法
+
+根据老年代的特点提出的一种标记算法，标记过程仍然与“标记-清除”算法一样，但后续步骤不是直接对可回收对象回收，而是让所有存活的对象向一端移动，然后直接清理掉端边界以外的内存。
+
+![标记-整理算法 ](images/94057049.22c58294.png)
+
+### 3.4 分代收集算法
+
+当前虚拟机的垃圾收集都采用分代收集算法，这种算法没有什么新的思想，只是根据对象存活周期的不同将内存分为几块。一般将 java 堆分为新生代和老年代，这样我们就可以根据各个年代的特点选择合适的垃圾收集算法。
+
+**比如在新生代中，每次收集都会有大量对象死去，所以可以选择”标记-复制“算法，只需要付出少量对象的复制成本就可以完成每次垃圾收集。而老年代的对象存活几率是比较高的，而且没有额外的空间对它进行分配担保，所以我们必须选择“标记-清除”或“标记-整理”算法进行垃圾收集。**
+
+**延伸面试问题：** HotSpot 为什么要分为新生代和老年代？
+
+根据上面的对分代收集算法的介绍回答。
+
+## 4 垃圾收集器
+
+**如果说收集算法是内存回收的方法论，那么垃圾收集器就是内存回收的具体实现。**
+
+虽然我们对各个收集器进行比较，但并非要挑选出一个最好的收集器。因为直到现在为止还没有最好的垃圾收集器出现，更加没有万能的垃圾收集器，**我们能做的就是根据具体应用场景选择适合自己的垃圾收集器**。试想一下：如果有一种四海之内、任何场景下都适用的完美收集器存在，那么我们的 HotSpot 虚拟机就不会实现那么多不同的垃圾收集器了。
+
+### 4.1 Serial 收集器
+
+Serial（串行）收集器是最基本、历史最悠久的垃圾收集器了。大家看名字就知道这个收集器是一个单线程收集器了。它的 **“单线程”** 的意义不仅仅意味着它只会使用一条垃圾收集线程去完成垃圾收集工作，更重要的是它在进行垃圾收集工作的时候必须暂停其他所有的工作线程（ **"Stop The World"** ），直到它收集结束。
+
+**新生代采用标记-复制算法，老年代采用标记-整理算法。**
+
+![ Serial 收集器 ](images/46873026.3a9311ec.png)
+
+虚拟机的设计者们当然知道 Stop The World 带来的不良用户体验，所以在后续的垃圾收集器设计中停顿时间在不断缩短（仍然还有停顿，寻找最优秀的垃圾收集器的过程仍然在继续）。
+
+但是 Serial 收集器有没有优于其他垃圾收集器的地方呢？当然有，它**简单而高效（与其他收集器的单线程相比）**。Serial 收集器由于没有线程交互的开销，自然可以获得很高的单线程收集效率。Serial 收集器对于运行在 Client 模式下的虚拟机来说是个不错的选择。
+
+### 4.2 ParNew 收集器
+
+**ParNew 收集器其实就是 Serial 收集器的多线程版本，除了使用多线程进行垃圾收集外，其余行为（控制参数、收集算法、回收策略等等）和 Serial 收集器完全一样。**
+
+**新生代采用标记-复制算法，老年代采用标记-整理算法。**
+
+![ParNew 收集器 ](images/22018368.df835851.png)
+
+它是许多运行在 Server 模式下的虚拟机的首要选择，除了 Serial 收集器外，只有它能与 CMS 收集器（真正意义上的并发收集器，后面会介绍到）配合工作。
+
+**并行和并发概念补充：**
+
+- **并行（Parallel）** ：指多条垃圾收集线程并行工作，但此时用户线程仍然处于等待状态。
+- **并发（Concurrent）**：指用户线程与垃圾收集线程同时执行（但不一定是并行，可能会交替执行），用户程序在继续运行，而垃圾收集器运行在另一个 CPU 上。
+
+### 4.3 Parallel Scavenge 收集器
+
+Parallel Scavenge 收集器也是使用标记-复制算法的多线程收集器，它看上去几乎和 ParNew 都一样。 **那么它有什么特别之处呢？**
+
+```properties
+-XX:+UseParallelGC
+
+    使用 Parallel 收集器+ 老年代串行
+
+-XX:+UseParallelOldGC
+
+    使用 Parallel 收集器+ 老年代并行
+```
+
+**Parallel Scavenge 收集器关注点是吞吐量（高效率的利用 CPU）。CMS 等垃圾收集器的关注点更多的是用户线程的停顿时间（提高用户体验）。所谓吞吐量就是 CPU 中用于运行用户代码的时间与 CPU 总消耗时间的比值。** Parallel Scavenge 收集器提供了很多参数供用户找到最合适的停顿时间或最大吞吐量，如果对于收集器运作不太了解，手工优化存在困难的时候，使用 Parallel Scavenge 收集器配合自适应调节策略，把内存管理优化交给虚拟机去完成也是一个不错的选择。
+
+**新生代采用标记-复制算法，老年代采用标记-整理算法。**
+
+![Parallel Scavenge 收集器 ](images/22018368.df835851-164915861363690.png)
+
+**这是 JDK1.8 默认收集器**
+
+使用 java -XX:+PrintCommandLineFlags -version 命令查看
+
+```sh
+-XX:InitialHeapSize=262921408 -XX:MaxHeapSize=4206742528 -XX:+PrintCommandLineFlags -XX:+UseCompressedClassPointers -XX:+UseCompressedOops -XX:+UseParallelGC
+java version "1.8.0_211"
+Java(TM) SE Runtime Environment (build 1.8.0_211-b12)
+Java HotSpot(TM) 64-Bit Server VM (build 25.211-b12, mixed mode)
+```
+
+JDK1.8 默认使用的是 Parallel Scavenge + Parallel Old，如果指定了-XX:+UseParallelGC 参数，则默认指定了-XX:+UseParallelOldGC，可以使用-XX:-UseParallelOldGC 来禁用该功能
+
+### 4.4.Serial Old 收集器
+
+**Serial 收集器的老年代版本**，它同样是一个单线程收集器。它主要有两大用途：一种用途是在 JDK1.5 以及以前的版本中与 Parallel Scavenge 收集器搭配使用，另一种用途是作为 CMS 收集器的后备方案。
+
+### 4.5 Parallel Old 收集器
+
+**Parallel Scavenge 收集器的老年代版本**。使用多线程和“标记-整理”算法。在注重吞吐量以及 CPU 资源的场合，都可以优先考虑 Parallel Scavenge 收集器和 Parallel Old 收集器。
+
+### 4.6 CMS 收集器
+
+**CMS（Concurrent Mark Sweep）收集器是一种以获取最短回收停顿时间为目标的收集器。它非常符合在注重用户体验的应用上使用。**
+
+**CMS（Concurrent Mark Sweep）收集器是 HotSpot 虚拟机第一款真正意义上的并发收集器，它第一次实现了让垃圾收集线程与用户线程（基本上）同时工作。**
+
+从名字中的**Mark Sweep**这两个词可以看出，CMS 收集器是一种 **“标记-清除”算法**实现的，它的运作过程相比于前面几种垃圾收集器来说更加复杂一些。整个过程分为四个步骤：
+
+- **初始标记：** 暂停所有的其他线程，并记录下直接与 root 相连的对象，速度很快 ；
+- **并发标记：** 同时开启 GC 和用户线程，用一个闭包结构去记录可达对象。但在这个阶段结束，这个闭包结构并不能保证包含当前所有的可达对象。因为用户线程可能会不断的更新引用域，所以 GC 线程无法保证可达性分析的实时性。所以这个算法里会跟踪记录这些发生引用更新的地方。
+- **重新标记：** 重新标记阶段就是为了修正并发标记期间因为用户程序继续运行而导致标记产生变动的那一部分对象的标记记录，这个阶段的停顿时间一般会比初始标记阶段的时间稍长，远远比并发标记阶段时间短
+- **并发清除：** 开启用户线程，同时 GC 线程开始对未标记的区域做清扫。
+
+![CMS 垃圾收集器 ](images/CMS收集器.8a4d0487.png)
+
+从它的名字就可以看出它是一款优秀的垃圾收集器，主要优点：**并发收集、低停顿**。但是它有下面三个明显的缺点：
+
+- **对 CPU 资源敏感；**
+- **无法处理浮动垃圾；**
+- **它使用的回收算法-“标记-清除”算法会导致收集结束时会有大量空间碎片产生。**
+
+### 4.7 G1 收集器
+
+**G1 (Garbage-First) 是一款面向服务器的垃圾收集器,主要针对配备多颗处理器及大容量内存的机器. 以极高概率满足 GC 停顿时间要求的同时,还具备高吞吐量性能特征.**
+
+被视为 JDK1.7 中 HotSpot 虚拟机的一个重要进化特征。它具备以下特点：
+
+- **并行与并发**：G1 能充分利用 CPU、多核环境下的硬件优势，使用多个 CPU（CPU 或者 CPU 核心）来缩短 Stop-The-World 停顿时间。部分其他收集器原本需要停顿 Java 线程执行的 GC 动作，G1 收集器仍然可以通过并发的方式让 java 程序继续执行。
+- **分代收集**：虽然 G1 可以不需要其他收集器配合就能独立管理整个 GC 堆，但是还是保留了分代的概念。
+- **空间整合**：与 CMS 的“标记-清理”算法不同，G1 从整体来看是基于“标记-整理”算法实现的收集器；从局部上来看是基于“标记-复制”算法实现的。
+- **可预测的停顿**：这是 G1 相对于 CMS 的另一个大优势，降低停顿时间是 G1 和 CMS 共同的关注点，但 G1 除了追求低停顿外，还能建立可预测的停顿时间模型，能让使用者明确指定在一个长度为 M 毫秒的时间片段内。
+
+G1 收集器的运作大致分为以下几个步骤：
+
+- **初始标记**
+- **并发标记**
+- **最终标记**
+- **筛选回收**
+
+**G1 收集器在后台维护了一个优先列表，每次根据允许的收集时间，优先选择回收价值最大的 Region(这也就是它的名字 Garbage-First 的由来)** 。这种使用 Region 划分内存空间以及有优先级的区域回收方式，保证了 G1 收集器在有限时间内可以尽可能高的收集效率（把内存化整为零）。
+
+### 4.8 ZGC 收集器
+
+与 CMS 中的 ParNew 和 G1 类似，ZGC 也采用标记-复制算法，不过 ZGC 对该算法做了重大改进。
+
+在 ZGC 中出现 Stop The World 的情况会更少！
+
+详情可以看 ： [《新一代垃圾回收器 ZGC 的探索与实践》](https://tech.meituan.com/2020/08/06/new-zgc-practice-in-meituan.html)
+
+## 参考
+
+- 《深入理解 Java 虚拟机：jvm 高级特性与最佳实践（第二版》
+- https://my.oschina.net/hosee/blog/644618
+- https://docs.oracle.com/javase/specs/jvms/se8/html/index.html
+
+# jvm——自定义类加载器
+
+## 为什么需要自定义类加载器  
+
+网上的大部分自定义类加载器文章，几乎都是贴一段实现代码，然后分析一两句自定义ClassLoader的原理。但是我觉得首先得把为什么需要自定义加载器这个问题搞清楚，因为如果不明白它的作用的情况下，还要去学习它显然是很让人困惑的。
+
+首先介绍自定义类的应用场景：
+
+- 加密：Java代码可以轻易的被反编译，如果你需要把自己的代码进行加密以防止反编译，可以先将编译后的代码用某种加密算法加密，类加密后就不能再用Java的ClassLoader去加载类了，这时就需要自定义ClassLoader在加载类的时候先解密类，然后再加载。
+
+- 从非标准的来源加载代码：如果你的字节码是放在数据库、甚至是在云端，就可以自定义类加载器，从指定的来源加载类。
+
+- 以上两种情况在实际中的综合运用：比如你的应用需要通过网络来传输 Java 类的字节码，为了安全性，这些字节码经过了加密处理。这个时候你就需要自定义类加载器来从某个网络地址上读取加密后的字节代码，接着进行解密和验证，最后定义出在Java虚拟机中运行的类。
+
+## 双亲委派模型
+
+在实现自己的ClassLoader之前，我们先了解一下系统是如何加载类的，那么就不得不介绍双亲委派模型的实现过程。
+
+```java
+//双亲委派模型的工作过程源码
+protected synchronized Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException{
+    // First, check if the class has already been loaded
+    Class c = findLoadedClass(name);
+    if (c == null) {
+        try {
+            if (parent != null) {
+                c = parent.loadClass(name, false);
+            } else {
+                c = findBootstrapClassOrNull(name);
+            }
+        } 
+        catch (ClassNotFoundException e) {
+            // ClassNotFoundException thrown if class not found
+            // from the non-null parent class loader
+            //父类加载器无法完成类加载请求
+        }
+ 
+        if (c == null) {
+            // If still not found, then invoke findClass in order to find the class
+            //子加载器进行类加载 
+            c = findClass(name);
+        }
+    }
+ 
+    if (resolve) {
+        //判断是否需要链接过程，参数传入
+        resolveClass(c);
+    }
+ 
+    return c;
+}
+```
+
+双亲委派模型的工作过程如下：
+
+- 当前类加载器从自己已经加载的类中查询是否此类已经加载，如果已经加载则直接返回原来已经加载的类。
+
+- 如果没有找到，就去委托父类加载器去加载（如代码c = parent.loadClass(name, false)所示）。父类加载器也会采用同样的策略，查看自己已经加载过的类中是否包含这个类，有就返回，没有就委托父类的父类去加载，一直到启动类加载器。因为如果父加载器为空了，就代表使用启动类加载器作为父加载器去加载。
+
+- 如果启动类加载器加载失败（例如在$JAVA_HOME/jre/lib里未查找到该class），则会抛出一个异常ClassNotFoundException，然后再调用当前加载器的findClass()方法进行加载。 
+
+> 双亲委派模型的好处：
+
+- 主要是为了安全性，避免用户自己编写的类动态替换 Java的一些核心类，比如 String。
+
+- 同时也避免了类的重复加载，因为 jvm中区分不同类，不仅仅是根据类名，相同的 class文件被不同的 ClassLoader加载就是不同的两个类。
+
+## 自定义类加载器
+
+- 从上面源码看出，调用loadClass时会先根据委派模型在父加载器中加载，如果加载失败，则会调用当前加载器的findClass来完成加载。
+
+- 因此我们自定义的类加载器只需要继承ClassLoader，并覆盖findClass方法，下面是一个实际例子，在该例中我们用自定义的类加载器去加载我们事先准备好的class文件。
+
+> 自定义一个People.java类做例子
+
+```java
+public class People {
+//该类写在记事本里，在用javac命令行编译成class文件，放在d盘根目录下
+	private String name;
+ 
+	public People() {}
+ 
+	public People(String name) {
+		this.name = name;
+	}
+ 
+	public String getName() {
+		return name;
+	}
+ 
+	public void setName(String name) {
+		this.name = name;
+	}
+ 
+	public String toString() {
+		return "I am a people, my name is " + name;
+	}
+ 
+}
+```
+
+> 自定义类加载器
+
+自定义一个类加载器，需要继承ClassLoader类，并实现findClass方法。其中defineClass方法可以把二进制流字节组成的文件转换为一个java.lang.Class（只要二进制字节流的内容符合Class文件规范）。
+
+```java
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
+import java.nio.channels.FileChannel;
+import java.nio.channels.WritableByteChannel;
+ 
+public class MyClassLoader extends ClassLoader
+{
+    public MyClassLoader()
+    {
+        
+    }
+    
+    public MyClassLoader(ClassLoader parent)
+    {
+        super(parent);
+    }
+    
+    protected Class<?> findClass(String name) throws ClassNotFoundException
+    {
+    	File file = new File("D:/People.class");
+        try{
+            byte[] bytes = getClassBytes(file);
+            //defineClass方法可以把二进制流字节组成的文件转换为一个java.lang.Class
+            Class<?> c = this.defineClass(name, bytes, 0, bytes.length);
+            return c;
+        } 
+        catch (Exception e)
+        {
+            e.printStackTrace();
+        }
+        
+        return super.findClass(name);
+    }
+    
+    private byte[] getClassBytes(File file) throws Exception
+    {
+        // 这里要读入.class的字节，因此要使用字节流
+        FileInputStream fis = new FileInputStream(file);
+        FileChannel fc = fis.getChannel();
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        WritableByteChannel wbc = Channels.newChannel(baos);
+        ByteBuffer by = ByteBuffer.allocate(1024);
+        
+        while (true){
+            int i = fc.read(by);
+            if (i == 0 || i == -1)
+            break;
+            by.flip();
+            wbc.write(by);
+            by.clear();
+        }
+        fis.close();
+        return baos.toByteArray();
+    }
+}
+```
+
+> 在主函数里使用
+
+```java
+MyClassLoader mcl = new MyClassLoader(); 
+Class<?> clazz = Class.forName("People", true, mcl); 
+Object obj = clazz.newInstance();
+       
+System.out.println(obj);
+System.out.println(obj.getClass().getClassLoader());//打印出我们的自定义类加载器
+```
+
+> 运行结果
+
+![img](images/20160825201247004.png)
+
+# java序列化，看这篇就够了
+
+## 序列化的含义、意义及使用场景
+
+- **序列化：将对象写入到IO流中**
+- **反序列化：从IO流中恢复对象**
+- **意义：序列化机制允许将实现序列化的Java对象转换位字节序列，这些字节序列可以保存在磁盘上，或通过网络传输，以达到以后恢复成原来的对象。序列化机制使得对象可以脱离程序的运行而独立存在。**
+- **使用场景：所有可在网络上传输的对象都必须是可序列化的，**比如RMI（remote method invoke,即远程方法调用），传入的参数或返回的对象都是可序列化的，否则会出错；**所有需要保存到磁盘的java对象都必须是可序列化的。通常建议：程序创建的每个JavaBean类都实现Serializeable接口。**
+
+## 序列化实现的方式
+
+如果需要将某个对象保存到磁盘上或者通过网络传输，那么这个类应该实现**Serializable**接口或者**Externalizable**接口之一。
+
+### Serializable
+
+#### 普通序列化
+
+Serializable接口是一个标记接口，不用实现任何方法。一旦实现了此接口，该类的对象就是可序列化的。
+
+1. **序列化步骤：**
+
+- **步骤一：创建一个ObjectOutputStream输出流；**
+
+- **步骤二：调用ObjectOutputStream对象的writeObject输出可序列化对象。**
+
+  ```java
+  public class Person implements Serializable {
+    private String name;
+    private int age;
+    //我不提供无参构造器
+    public Person(String name, int age) {
+        this.name = name;
+        this.age = age;
+    }
+  
+    @Override
+    public String toString() {
+        return "Person{" +
+                "name='" + name + '\'' +
+                ", age=" + age +
+                '}';
+    }
+  }
+  
+  public class WriteObject {
+    public static void main(String[] args) {
+        try (//创建一个ObjectOutputStream输出流
+             ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream("object.txt"))) {
+            //将对象序列化到文件s
+            Person person = new Person("9龙", 23);
+            oos.writeObject(person);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+  }
+  ```
+
+1. **反序列化步骤：**
+
+- **步骤一：创建一个ObjectInputStream输入流；**
+
+- **步骤二：调用ObjectInputStream对象的readObject()得到序列化的对象。**
+
+  我们将上面序列化到person.txt的person对象反序列化回来
+
+  ```java
+  public class Person implements Serializable {
+    private String name;
+    private int age;
+    //我不提供无参构造器
+    public Person(String name, int age) {
+        System.out.println("反序列化，你调用我了吗？");
+        this.name = name;
+        this.age = age;
+    }
+  
+    @Override
+    public String toString() {
+        return "Person{" +
+                "name='" + name + '\'' +
+                ", age=" + age +
+                '}';
+    }
+  }
+  
+  public class ReadObject {
+    public static void main(String[] args) {
+        try (//创建一个ObjectInputStream输入流
+             ObjectInputStream ois = new ObjectInputStream(new FileInputStream("person.txt"))) {
+            Person brady = (Person) ois.readObject();
+            System.out.println(brady);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+  }
+  //输出结果
+  //Person{name='9龙', age=23}
+  ```
+
+  **waht???? 输出告诉我们，反序列化并不会调用构造方法。反序列的对象是由JVM自己生成的对象，不通过构造方法生成。**
+
+#### 成员是引用的序列化
+
+**如果一个可序列化的类的成员不是基本类型，也不是String类型，那这个引用类型也必须是可序列化的；否则，会导致此类不能序列化。**
+
+看例子，我们新增一个Teacher类。将Person去掉实现Serializable接口代码。
+
+```java
+public class Person{
+    //省略相关属性与方法
+}
+public class Teacher implements Serializable {
+
+    private String name;
+    private Person person;
+
+    public Teacher(String name, Person person) {
+        this.name = name;
+        this.person = person;
+    }
+
+     public static void main(String[] args) throws Exception {
+        try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream("teacher.txt"))) {
+            Person person = new Person("路飞", 20);
+            Teacher teacher = new Teacher("雷利", person);
+            oos.writeObject(teacher);
+        }
+    }
+}
+```
+
+![img](images/1603499-20190521180304399-894547036.jpg)
+
+我们看到程序直接报错，因为Person类的对象是不可序列化的，这导致了Teacher的对象不可序列化
+
+#### 同一对象序列化多次的机制
+
+**同一对象序列化多次，会将这个对象序列化多次吗？**答案是**否定**的。
+
+```Java
+public class WriteTeacher {
+    public static void main(String[] args) throws Exception {
+        try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream("teacher.txt"))) {
+            Person person = new Person("路飞", 20);
+            Teacher t1 = new Teacher("雷利", person);
+            Teacher t2 = new Teacher("红发香克斯", person);
+            //依次将4个对象写入输入流
+            oos.writeObject(t1);
+            oos.writeObject(t2);
+            oos.writeObject(person);
+            oos.writeObject(t2);
+        }
+    }
+}
+```
+
+依次将t1、t2、person、t2对象序列化到文件teacher.txt文件中。
+
+**注意：反序列化的顺序与序列化时的顺序一致**。
+
+```java
+public class ReadTeacher {
+    public static void main(String[] args) {
+        try (ObjectInputStream ois = new ObjectInputStream(new FileInputStream("teacher.txt"))) {
+            Teacher t1 = (Teacher) ois.readObject();
+            Teacher t2 = (Teacher) ois.readObject();
+            Person p = (Person) ois.readObject();
+            Teacher t3 = (Teacher) ois.readObject();
+            System.out.println(t1 == t2);
+            System.out.println(t1.getPerson() == p);
+            System.out.println(t2.getPerson() == p);
+            System.out.println(t2 == t3);
+            System.out.println(t1.getPerson() == t2.getPerson());
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}
+//输出结果
+//false
+//true
+//true
+//true
+//true
+```
+
+从输出结果可以看出，**Java序列化同一对象，并不会将此对象序列化多次得到多个对象。**
+
+- **Java序列化算法**
+
+1. **所有保存到磁盘的对象都有一个序列化编码号**
+
+2. **当程序试图序列化一个对象时，会先检查此对象是否已经序列化过，只有此对象从未（在此虚拟机）被序列化过，才会将此对象序列化为字节序列输出。**
+
+3. **如果此对象已经序列化过，则直接输出编号即可。**
+
+   图示上述序列化过程。
+
+![img](images/1603499-20190521180352659-740977206.jpg)
+
+#### java序列化算法潜在的问题
+
+由于java序利化算法不会重复序列化同一个对象，只会记录已序列化对象的编号。**如果序列化一个可变对象（对象内的内容可更改）后，更改了对象内容，再次序列化，并不会再次将此对象转换为字节序列，而只是保存序列化编号。**
+
+```java
+public class WriteObject {
+    public static void main(String[] args) {
+        try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream("person.txt"));
+             ObjectInputStream ios = new ObjectInputStream(new FileInputStream("person.txt"))) {
+            //第一次序列化person
+            Person person = new Person("9龙", 23);
+            oos.writeObject(person);
+            System.out.println(person);
+
+            //修改name
+            person.setName("海贼王");
+            System.out.println(person);
+            //第二次序列化person
+            oos.writeObject(person);
+
+            //依次反序列化出p1、p2
+            Person p1 = (Person) ios.readObject();
+            Person p2 = (Person) ios.readObject();
+            System.out.println(p1 == p2);
+            System.out.println(p1.getName().equals(p2.getName()));
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}
+//输出结果
+//Person{name='9龙', age=23}
+//Person{name='海贼王', age=23}
+//true
+//true
+```
+
+#### 可选的自定义序列化
+
+1. 有些时候，我们有这样的需求，某些属性不需要序列化。**使用transient关键字选择不需要序列化的字段。**
+
+   ```java
+   public class Person implements Serializable {
+      //不需要序列化名字与年龄
+      private transient String name;
+      private transient int age;
+      private int height;
+      private transient boolean singlehood;
+      public Person(String name, int age) {
+          this.name = name;
+          this.age = age;
+      }
+      //省略get,set方法
+   }
+   
+   public class TransientTest {
+      public static void main(String[] args) throws Exception {
+          try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream("person.txt"));
+               ObjectInputStream ios = new ObjectInputStream(new FileInputStream("person.txt"))) {
+              Person person = new Person("9龙", 23);
+              person.setHeight(185);
+              System.out.println(person);
+              oos.writeObject(person);
+              Person p1 = (Person)ios.readObject();
+              System.out.println(p1);
+          }
+      }
+   }
+   //输出结果
+   //Person{name='9龙', age=23', singlehood=true', height=185cm}
+   //Person{name='null', age=0', singlehood=false', height=185cm}
+   ```
+
+   从输出我们看到，**使用transient修饰的属性，java序列化时，会忽略掉此字段，所以反序列化出的对象，被transient修饰的属性是默认值。对于引用类型，值是null；基本类型，值是0；boolean类型，值是false。**
+
+2. 使用transient虽然简单，但将此属性完全隔离在了序列化之外。java提供了**可选的自定义序列化。**可以进行控制序列化的方式，或者对序列化数据进行编码加密等。
+
+   ```java
+   private void writeObject(java.io.ObjectOutputStream out) throws IOException；
+   private void readObject(java.io.ObjectIutputStream in) throws IOException,ClassNotFoundException;
+   private void readObjectNoData() throws ObjectStreamException;
+   ```
+
+   通过重写writeObject与readObject方法，可以自己选择哪些属性需要序列化， 哪些属性不需要。如果writeObject使用某种规则序列化，则相应的readObject需要相反的规则反序列化，以便能正确反序列化出对象。这里展示对名字进行反转加密。
+
+   ```java
+   public class Person implements Serializable {
+      private String name;
+      private int age;
+      //省略构造方法，get及set方法
+   
+      private void writeObject(ObjectOutputStream out) throws IOException {
+          //将名字反转写入二进制流
+          out.writeObject(new StringBuffer(this.name).reverse());
+          out.writeInt(age);
+      }
+   
+      private void readObject(ObjectInputStream ins) throws IOException,ClassNotFoundException{
+          //将读出的字符串反转恢复回来
+          this.name = ((StringBuffer)ins.readObject()).reverse().toString();
+          this.age = ins.readInt();
+      }
+   }
+   ```
+
+   当序列化流不完整时，readObjectNoData()方法可以用来正确地初始化反序列化的对象。例如，使用不同类接收反序列化对象，或者序列化流被篡改时，系统都会调用readObjectNoData()方法来初始化反序列化的对象。
+
+3. **更彻底的自定义序列化**
+
+   ANY-ACCESS-MODIFIER Object writeReplace() throws ObjectStreamException;
+   ANY-ACCESS-MODIFIER Object readResolve() throws ObjectStreamException;
+
+   - **writeReplace：在序列化时，会先调用此方法，再调用writeObject方法。此方法可将任意对象代替目标序列化对象**
+
+     ```java
+     public class Person implements Serializable {
+       private String name;
+       private int age;
+       //省略构造方法，get及set方法
+     
+       private Object writeReplace() throws ObjectStreamException {
+           ArrayList<Object> list = new ArrayList<>(2);
+           list.add(this.name);
+           list.add(this.age);
+           return list;
+       }
+     
+        public static void main(String[] args) throws Exception {
+           try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream("person.txt"));
+                ObjectInputStream ios = new ObjectInputStream(new FileInputStream("person.txt"))) {
+               Person person = new Person("9龙", 23);
+               oos.writeObject(person);
+               ArrayList list = (ArrayList)ios.readObject();
+               System.out.println(list);
+           }
+       }
+     }
+     //输出结果
+     //[9龙, 23]
+     ```
+
+   - **readResolve：反序列化时替换反序列化出的对象，反序列化出来的对象被立即丢弃。此方法在readeObject后调用。**
+
+     ```java
+     public class Person implements Serializable {
+         private String name;
+         private int age;
+         //省略构造方法，get及set方法
+          private Object readResolve() throws ObjectStreamException{
+             return new ("brady", 23);
+         }
+         public static void main(String[] args) throws Exception {
+             try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream("person.txt"));
+                  ObjectInputStream ios = new ObjectInputStream(new FileInputStream("person.txt"))) {
+                 Person person = new Person("9龙", 23);
+                 oos.writeObject(person);
+                 HashMap map = (HashMap)ios.readObject();
+                 System.out.println(map);
+             }
+         }
+     }
+     //输出结果
+     //{brady=23}
+     ```
+
+     **readResolve常用来反序列单例类，保证单例类的唯一性。**
+
+     **注意：readResolve与writeReplace的访问修饰符可以是private、protected、public，如果父类重写了这两个方法，子类都需要根据自身需求重写，这显然不是一个好的设计。通常建议对于final修饰的类重写readResolve方法没有问题；否则，重写readResolve使用private修饰。**
+
+### Externalizable：强制自定义序列化
+
+通过实现Externalizable接口，必须实现writeExternal、readExternal方法。
+
+```java
+public interface Externalizable extends java.io.Serializable {
+     void writeExternal(ObjectOutput out) throws IOException;
+     void readExternal(ObjectInput in) throws IOException, ClassNotFoundException;
+}
+public class ExPerson implements Externalizable {
+
+    private String name;
+    private int age;
+    //注意，必须加上pulic 无参构造器
+    public ExPerson() {
+    }
+
+    public ExPerson(String name, int age) {
+        this.name = name;
+        this.age = age;
+    }
+
+    @Override
+    public void writeExternal(ObjectOutput out) throws IOException {
+        //将name反转后写入二进制流
+        StringBuffer reverse = new StringBuffer(name).reverse();
+        System.out.println(reverse.toString());
+        out.writeObject(reverse);
+        out.writeInt(age);
+    }
+
+    @Override
+    public void readExternal(ObjectInput in) throws IOException, ClassNotFoundException {
+        //将读取的字符串反转后赋值给name实例变量
+        this.name = ((StringBuffer) in.readObject()).reverse().toString();
+        System.out.println(name);
+        this.age = in.readInt();
+    }
+
+    public static void main(String[] args) throws IOException, ClassNotFoundException {
+        try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream("ExPerson.txt"));
+             ObjectInputStream ois = new ObjectInputStream(new FileInputStream("ExPerson.txt"))) {
+            oos.writeObject(new ExPerson("brady", 23));
+            ExPerson ep = (ExPerson) ois.readObject();
+            System.out.println(ep);
+        }
+    }
+}
+//输出结果
+//ydarb
+//brady
+//ExPerson{name='brady', age=23}
+```
+
+**注意：Externalizable接口不同于Serializable接口，实现此接口必须实现接口中的两个方法实现自定义序列化，这是强制性的；特别之处是必须提供pulic的无参构造器，因为在反序列化的时候需要反射创建对象。**
+
+### 两种序列化对比
+
+| 实现Serializable接口                                         | 实现Externalizable接口   |
+| :----------------------------------------------------------- | :----------------------- |
+| 系统自动存储必要的信息                                       | 程序员决定存储哪些信息   |
+| Java内建支持，易于实现，只需要实现该接口即可，无需任何代码支持 | 必须实现接口内的两个方法 |
+| 性能略差                                                     | 性能略好                 |
+
+**虽然Externalizable接口带来了一定的性能提升，但变成复杂度也提高了，所以一般通过实现Serializable接口进行序列化。**
+
+## 序列化版本号serialVersionUID
+
+我们知道，**反序列化必须拥有class文件，但随着项目的升级，class文件也会升级，序列化怎么保证升级前后的兼容性呢？**
+
+java序列化提供了一个private static final long serialVersionUID 的序列化版本号，只有版本号相同，即使更改了序列化属性，对象也可以正确被反序列化回来。
+
+```java
+public class Person implements Serializable {
+    //序列化版本号
+    private static final long serialVersionUID = 1111013L;
+    private String name;
+    private int age;
+    //省略构造方法及get,set
+}
+```
+
+如果反序列化使用的**class的版本号**与序列化时使用的**不一致**，反序列化会**报InvalidClassException异常。**
+
+![img](images/1603499-20190521180432865-1645890598.jpg)
+
+**序列化版本号可自由指定，如果不指定，JVM会根据类信息自己计算一个版本号，这样随着class的升级，就无法正确反序列化；不指定版本号另一个明显隐患是，不利于jvm间的移植，可能class文件没有更改，但不同jvm可能计算的规则不一样，这样也会导致无法反序列化。**
+
+什么情况下需要修改serialVersionUID呢？分三种情况。
+
+- 如果只是修改了方法，反序列化不容影响，则无需修改版本号；
+- 如果只是修改了静态变量，瞬态变量（transient修饰的变量），反序列化不受影响，无需修改版本号；
+- 如果修改了非瞬态变量，则可能导致反序列化失败。**如果新类中实例变量的类型与序列化时类的类型不一致，则会反序列化失败，这时候需要更改serialVersionUID。**如果只是新增了实例变量，则反序列化回来新增的是默认值；如果减少了实例变量，反序列化时会忽略掉减少的实例变量。
+
+## 总结
+
+1. 所有需要网络传输的对象都需要实现序列化接口，通过建议所有的javaBean都实现Serializable接口。
+2. 对象的类名、实例变量（包括基本类型，数组，对其他对象的引用）都会被序列化；方法、类变量、transient实例变量都不会被序列化。
+3. 如果想让某个变量不被序列化，使用transient修饰。
+4. 序列化对象的引用类型成员变量，也必须是可序列化的，否则，会报错。
+5. 反序列化时必须有序列化对象的class文件。
+6. 当通过文件、网络来读取序列化后的对象时，必须按照实际写入的顺序读取。
+7. 单例类序列化，需要重写readResolve()方法；否则会破坏单例原则。
+8. 同一对象序列化多次，只有第一次序列化为二进制流，以后都只是保存序列化编号，不会重复序列化。
+9. 建议所有可序列化的类加上serialVersionUID 版本号，方便项目升级。
