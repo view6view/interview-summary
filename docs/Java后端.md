@@ -1831,3 +1831,208 @@ for (int i = 0; i < 5; i++) {
 1. 尽量使用手动的方式创建线程池，避免使用`Executors`工厂类
 2. 根据场景，合理设置线程池的各个参数，包括线程池数量、队列、线程工厂和拒绝策略
 3. 在调线程池`submit()`方法的时候，一定要尽量避免任务执行异常被吞掉的问题
+
+# AOP 面向切面编程
+
+什么是AOP？
+
+AOP全称`Aspect Oriented Programming`意为面向切面编程，也叫做面向方法编程，是通过预编译方式和运行期动态代理的方式实现不修改源代码的情况下给程序动态统一添加功能的技术。
+
+AOP技术利用一种称为“横切”的技术，剖解开封装对象的内部，将影响多个类的公共行为封装到一个可重用的模块中，并将其命名为`Aspect`切面。所谓的切面，简单来说就是与业务无关，却为业务模块所共同调用的逻辑，将其封装起来便于减少系统的重复代码，降低模块的耦合度，有利用未来的可操作性和可维护性。
+
+利用AOP可以对业务逻辑各个部分进行隔离，从而使业务逻辑各部分之间的耦合度降低，提高程序的可重用性，同时提高开发效率。
+
+AOP的使用场景主要包括日志记录、性能统计、安全控制、事务处理、异常处理等。
+
+例如：日志功能，日志代码往往横向散布在所有对象层次中，而与之对应的对象的核心功能毫无关系。对于其他类型的代码，如安全性、异常处理、透明的持续性等也都是如此，这种散布在各处而且无关的代码被称为横切（cross-cutting）。在OOP设计中，它们会导致大量重复的代码，不利用模块的重用。
+
+![img](images/webp-165820006928818.webp)
+
+例如：银行系统的取款流程和查询余额的流程中都有存在相同的验证流程
+
+![img](images/webp-165820008921121.webp)
+
+AOP与OOP有什么关系呢？
+
+AOP和OOP是面向不同领域的两种思想，OOP面向对象编程主要是针对业务处理过程中的实体的属性和行为的抽象与封装，以获得更加清晰高效地逻辑单元。AOP面向切面编程是针对业务处理过程中的切面进行提取，它所面对的是处理过程中某个步骤或阶段，以获得逻辑过程中各部分之间低耦合性的隔离效果。
+
+AOP可以说是OOP的补充和完善，OOP引入封装、继承、多态等概念建立了一种对象层次结构，用来模拟公共行为的一个集合。当需要为分散的对象引入公共行为的时候，OOP显得无能为力，也就是说，OOP允许定义从上到下的关系，但并不适合定义从左到右的关系。
+
+AOP的本质是什么呢？
+
+AOP是实现**分散关注**的编程方法，将关注封装在切面中。如何分散关注呢？将需求功能从不相关的类中分离出来，同时使多个类共用一个行为，一旦行为发生变化，不必修改多个类，只修改行为即可。
+
+AOP将软件系统划分为两个部分：核心关注点、横切关注点，业务处理的主要流程是核心关注点，与之关系不大的部分是横切关注点。横切关注点的特点是经常发生在核心关注点的多个位置，而且它们功能基本相似。AOP的作用在于分离系统中的各个关注点，将核心关注点和横切关注点分离开来。
+
+![img](images/webp-165820010877924.webp)
+
+AOP只是一个概念并没有设定具体语言的实现，它能克服那些只有单继承特性语言的缺点。实现AOP的技术主要分为两类：一类是采用动态代理技术利用截取消息的方式，对消息进行装饰以取代原有对象行为的执行。另一类是采用静态织入的方式，引入特定语法创建切面，从而使编译器可以在编译期间织入相关的切面代码。
+
+AOP运行原理是什么样的呢？
+
+![img](images/webp-165820013174027.webp)
+
+![img](images/webp-165820014686130.webp)
+
+AOP核心概念有哪些呢？
+
+- 横切关注点
+
+对哪些方法进行拦截，拦截后怎样处理。
+
+- `Aspect` 切面
+
+切面是散落在系统各处通用的业务逻辑代码，如日志模块、权限模块、事务模块等。
+
+切面用来装载切入点`PointCut`和通知`Advice`
+
+切面通常是一个类，可以定义切入点和通知。类是对物体特征的抽象，切面是对横切关注点的抽象。
+
+切面是业务流程运行的某个特定步骤，是应用运行过程中的关注点，关注点通常会横切多个对象，因此也被称为横切关注点。
+
+- `JointPoint` 连接点
+
+连接点是程序执行过程中明确的点，一般是类中方法的调用。连接点是程序在运行过程中能够插入切面的地点，比如方法调用、异常抛出、字段修改等。
+
+![img](images/webp-165820017188533.webp)
+
+- `Advice` 通知
+
+通知是AOP在特定切入点上执行的增强处理，是拦截到连接点之后要执行的代码，通知可以分为前置通知`Before`、后置通知`AfterReturning`、异常通知`AfterThrowing`、最终通知`After`、环绕通知`Around`五类。
+
+- `PointCut` 切入点
+
+切入点是带有通知的连接点，在程序中主要体现为编写切入点表达式。切入点是对连接点进行拦截的定义。切入点用于定义通知应该切入到哪些连接点上，不同的通知需要切入到不同的连接点上，这种精准的匹配是由切入点的正则表达式来定义的。
+
+切入点是可以插入增强处理的连接点，当某个连接点满足执行要求时，该连接点将被连接增强处理，该连接点也就变成了切入点。
+
+切入点是拦截的方法，连接点`JointPoint`拦截后将变成切入点。
+
+- `Proxy` 代理对象
+
+代理对象是AOP创建的对象，包含通知，代理是目标对象的加强。 代理是将通知应用到目标对象之后被动态创建的对象，可以简单理解代理对象的功能等同于目标对象的核心业务逻辑功能加上共有功能。代理对象对于使用者而言是透明的，是程序运行过程中的产物。
+
+- `Weaving` 织入
+
+通过切入点切入，将切面应用到目标对象并导致代理对象创建的过程。将切面应用到目标对象从而创建一个新的代理对象的过程，这个过程可以发生在编译器、类转载期、运行期，不同的发生点有着不同的前提条件。如果发生在编译器就需要有一个支持这种AOP实现的特殊编译器，发生在类转载期就需要有一个支持AOP实现的特殊类转载其，发生在运行期则可以直接通过反射机制与动态代理机制来动态实现。
+
+- `Target` 目标对象
+
+目标对象是指代理的目标对象，是指要织入的对象模块。目标对象是那些即将切入切面的对象，也就是被通知的对象。这些对象中已经只剩下干干净净的核心业务逻辑代码，所有的共有功能等待AOP容器的切入。
+
+目标对象是AOP进行增强处理的对象，也被称为增强的对象。如果AOP是通过运行时代理来实现的，那么这个对象将是一个被代理的对象。
+
+![img](images/webp-165820019380436.webp)
+
+AOP是典型的代理模式的体现，代理模式的特征是代理类与委托类有同样的接口，代理类主要负责为委托类预处理消息、过滤消息、将消息转发给委托类、事后处理消息等。代理类与委托类之间通常会存在关联关系，一个代理类的对象与一个委托类的对象相关联，代理类的对象本身并不真正实现服务，而是通过调用委托类的对象方法来提供特定的服务。
+
+# 为什么spring Boot是一个线程处理一个web请求而不是一个线程处理一次tcp连接？
+
+**Spring本身并不进行Web的处理，无论是TCP连接也好还是请求和响应也好，这些都是在Spring以外的部分完成的，例如Tomcat，默认的SpringBoot将会集成Tomcat。**
+
+就以Tomcat来说，一个Tomcat也就是一个服务器，服务器将会包含一个或多个Service，这也就是在Tomcat中运行的各个web服务，而组成web服务的组件，分别为Connector和Container，在Tomcat启动Service的时候就会初始化它们。
+
+其中Connector的作用，顾名思义，用来处理网络的各类链接，对于Http服务，那当然是TCP连接了。
+
+Connector的连接建立之后，是能够传输数据的，这些数据将会通过Servlet接口的具体实现来进行处理。Servlet中，可以得到输入流和输出流，如果使用HttpServlet，那么你可以直接得到Request和输出Response。
+
+那么Spring在做什么呢？
+
+**SpringWeb定义了一个DispatcherServlet，这个东西会接收Request，并且根据用户的配置，转到Spring中的Controller进行处理。**
+
+**DispatcherServlet不在乎这个Request的连接，甚至不在乎这个Request是谁提供的**，**只要有一个Web服务器，或者说web容器提供符合要求的Request，Spring的Web模块就能使用它，并且把它分发到自己容器内的Controller中。**
+
+**通常来说，Request里面包含了InputStream和OutputStream，利用他们就足以完成响应了。**
+
+这些被Spring分发的Request，他们的连接也当然是被web容器管理的，这样的话，是不是一个请求使用一个线程，这个由web的容器决定而不是Spring。
+
+那么Web容器会不会一个Tcp连接一个线程呢？绝对不会，因为这种模式存在性能上的瓶颈。
+
+**早期的Http是只能请求完毕后关闭tcp，下次重新连接的，那是Http1.0，而现在使用的是Http1.1，也就是同一个Tcp连接能够发送多个request，不需要请求完毕就关掉，这样就不用反复的进行TCP的连接，更加的方便快捷。**
+
+如果线程太多的话，那么系统将会花费更多的时间来切换它们，可以设想一种情况：如果线程可以无限制的多，那么会不会CPU只能在那里来回切换线程，而不能具体执行线程的代码呢？
+
+（以下是简介，并不代表Tomcat也是这样做的）
+
+当下Java里面的NIO是更优的做法：
+
+使用[主线程](https://www.zhihu.com/search?q=主线程&search_source=Entity&hybrid_search_source=Entity&hybrid_search_extra={"sourceType"%3A"answer"%2C"sourceId"%3A2245846786})来接收链接，收到新的连接后就存到什么地方，例如存到ArrayList里面，然后把Socket注册到Selector上面。
+
+然后利用NIO的Selector，获取到达服务器的数据，封装为Request塞给Servlet处理。
+
+也就是主线程只需要不断地封装request，接收链接即可，不管多少个链接，这一个主线程就完全足够了。
+
+**如果每一个连接都有一个线程，假设有100000个链接，这些链接可以来自很多不同的用户，那么就有同等数量的线程出现，即使这些用户仅仅是打开了网页（实际上打开网页一般会有4-5个[TCP连接](https://www.zhihu.com/search?q=TCP连接&search_source=Entity&hybrid_search_source=Entity&hybrid_search_extra={"sourceType"%3A"answer"%2C"sourceId"%3A2245846786})）而没有进行任何操作。而使用上述的NIO，只需要一个。**
+
+**自己设计的服务器当然可以不考虑这些，但是现在的类似于Tomcat的web容器，是需要考虑这种超级多的连接的，因为会有企业使用这种开源的web容器，所以对性能有更加严苛的要求，这也是我认为不应该使用“一个TCP连接一个线程”的原因。**
+
+Spring Boot中线程的维护是由servlet容器或Netty负责，所以题主应该问的是servlet容器的线程模型。而Spring Boot是一个自动配置的框架。目前Spring Boot对web开发目前有两种解决方案：1. 传统的web框架基于Spring MVC + Tomcat，2. Spring 5新增的web-reactive框架基于Spring Webflux + Netty。这两个框架都支持大家熟用的注释，比如@Controller。[技术栈](https://www.zhihu.com/search?q=技术栈&search_source=Entity&hybrid_search_source=Entity&hybrid_search_extra={"sourceType"%3A"answer"%2C"sourceId"%3A2268721516})可以看官网图，
+
+
+
+![img](images/v2-2f5ae99b4cca3af0fc49c9650d52f72e_720w.jpg)![img](images/v2-2f5ae99b4cca3af0fc49c9650d52f72e_720w-16585801282751.jpg)
+
+
+
+先不谈web-reactive，通过分析Spring MVC和Tomcat的交互，来浅析一下Spring与servlet容器交互的原理——Spring MVC基于Java EE的Servlet API，Servlet API定义了Servlet容器和具体的[servlet](https://www.zhihu.com/search?q=servlet&search_source=Entity&hybrid_search_source=Entity&hybrid_search_extra={"sourceType"%3A"answer"%2C"sourceId"%3A2268721516})代码交互的约定，Spring MVC通过注册一个名为DispatcherServlet的servlet到servlet容器中处理请求，并把实际工作交给Spring提供的组件bean执行。
+
+了解了Spring和servlet容器的交互之后再回到问题。
+
+首先题主可能对连接和请求的概念混淆了，这里强调一下连接（TCP）是传输层的，请求（HTTP）是应用层的。在像 HTTP 这样的Client-Server协议中，会话分为三个阶段：
+
+1. 客户端建立一条 TCP 连接（如果传输层不是 TCP，也可以是其他适合的连接）。
+2. 客户端发送请求并等待应答。
+3. 服务器处理请求并送回应答，回应包括一个状态码和对应的数据。
+
+从 HTTP/1.1 开始，连接在完成第三阶段后不再关闭，客户端可以再次发起新的请求。这意味着第二步和第三步可以连续进行数次。
+
+其次真的是一个线程处理一个HTTP请求吗？我觉得这个说法也不准确。
+
+Tomcat支持三种运行模式（BIO, NIO, APR），大致流程均是：
+
+当客户端向服务器建立TCP连接，发送请求，服务器操作系统将该连接放入accept队列，Tomcat在accept队列中接收连接；在连接中获取请求的数据，生成request；调用servlet容器处理请求；返回response，完成一次HTTP会话。在Tomcat 8.0前默认使用BIO，Tomcat在accept队列中接受TCP连接并获得HTTP Request，从线程池中取出空闲的线程来处理请求，如果无空闲线程则阻塞。Tomcat 8.0起默认启用NIO模式，在从accept获得request之后，注册到nio.Selector中后不阻塞继续获取连接，Tomcat遍历找到selector中可用的request，再从线程池中取出空闲的线程来处理请求。Tomcat相关的配置参数有： 
+
+1. acceptCount，当accept队列中连接的个数达到acceptCount时，队列满，进来的请求一律被拒绝。
+2. maxConnections，当Tomcat接收的[连接数](https://www.zhihu.com/search?q=连接数&search_source=Entity&hybrid_search_source=Entity&hybrid_search_extra={"sourceType"%3A"answer"%2C"sourceId"%3A2268721516})达到maxConnections时，accept队列中的线程会一直阻塞着。
+3. maxThreads，[线程池](https://www.zhihu.com/search?q=线程池&search_source=Entity&hybrid_search_source=Entity&hybrid_search_extra={"sourceType"%3A"answer"%2C"sourceId"%3A2268721516})线程的最大数量。
+
+所以无论是BIO，还是NIO，当请求数量大于acceptCount，接收的连接数大于maxConnection时，Tomcat都不会分配线程服务。
+
+# Netty和Tomcat的区别、性能对比
+
+## Netty和Tomcat有什么区别？ 
+
+Netty和Tomcat最大的区别就在于通信协议，Tomcat是基于Http协议的，他的实质是一个基于http协议的web容器，但是Netty不一样，他能通过编程自定义各种协议，因为netty能够通过codec自己来编码/解码字节流，完成类似redis访问的功能，这就是netty和tomcat最大的不同。
+
+有人说netty的性能就一定比tomcat性能高，其实不然，tomcat从6.x开始就支持了nio模式，并且后续还有arp模式——一种通过jni调用apache网络库的模式，相比于旧的bio模式，并发性能得到了很大提高，特别是arp模式，而netty是否比tomcat性能更高，则要取决于netty程序作者的技术实力了。 
+为什么Netty受欢迎？
+
+netty是一款收到大公司青睐的框架，在我看来，netty能够受到青睐的原因有三： 
+
+- 并发高 
+- 传输快 
+- 封装好 
+
+## Netty为什么并发高 ？
+
+Netty是一款基于NIO（Nonblocking I/O，非阻塞IO）开发的网络通信框架，对比于BIO（Blocking I/O，阻塞IO），他的并发性能得到了很大提高。
+
+NIO 2.0里终于有AIO了，Linux上用AIO，Windows上用IOCP，都支持了概念上的最后一种IOasynchronous I/O
+
+1. 就IO而言：概念上有5中模型：blocking I/O，nonblocking I/O，I/O multiplexing (select and poll)，signal driven I/O (SIGIO)，asynchronous I/O (the POSIX aio_functions)。 
+2. 然后呢 不同的操作系统对上述模型支持不同: unix支持io多路复用，不同系统叫法不同 :freebsd里面叫 kqueue；linux 是epoll。而windows: 2000的时候就诞生了IOCP支持最后一种异步I/O 
+3. java是一种跨平台语言，为了支持异步IO,诞生了nio,Java1.4引入的NIO 1.0是基于I/O复用的。在各个平台上会选择不同的复用方式。Linux用的epoll，BSD上用kqueue，Windows上应该是重叠I/O（肯定不是IOCP）
+
+但是nio直接使用比较难用，所以有了mina，netty这些针对网络io部分（tcp/udp-传输层）的封装（nio也有非网络io部分），为了使nio更易用。 
+http是应用层的协议。 
+servlet3.0则是另外一种东西，不是对协议的封装，javaee6众多规范中的一个，但凡javaee6的实现（或者像tomcat这种web容器部分的实现），都会支持servlet3.0，servlet理论上可以支持多种应用层协议（不单单只是http），而servlet3.0以后提供的异步特性与javase提供的nio或aio无直接关系，就是使用bio一样可以实现servlet3.0中提供的异步特性。 
+异步只是一种概念，异步与否要看，上层使用的异步，而支持的下层完全可能是阻塞的。
+
+- tomcat就是针对http层的，所以我建议http还是选择tomcat(或者其他成熟的http-server)，并不是说netty不好，而是你的选择问题。
+- netty是一个网络组件，tcp,udp,http都可以弄，但是官方文档都是些hello wolrd级别的。如果你非常了解http结构，完全可以基于netty搞出一个比tomcat牛的http server。如果做tcp开发，netty不二之选！
+
+现在高并发分布式网站架构一般采用nginx（前端负载均衡）+ Netty/Tomcat（HTTP）
+
+Netty是基于Java NIO开发的，而Tomcat是Apache下的针对HTTP的服务器项目，前者更像一个中间件框架，后者更像一个工具
+
+虽然tomcat 和 netty 都是使用了nio，但是测试下来：**springboot的tomcat和netty性能初步对比**，发现Netty性能为有点小优势，其中一点就是Netty是使用零拷贝
