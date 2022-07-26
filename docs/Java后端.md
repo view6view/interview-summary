@@ -2036,3 +2036,7 @@ servlet3.0则是另外一种东西，不是对协议的封装，javaee6众多规
 Netty是基于Java NIO开发的，而Tomcat是Apache下的针对HTTP的服务器项目，前者更像一个中间件框架，后者更像一个工具
 
 虽然tomcat 和 netty 都是使用了nio，但是测试下来：**springboot的tomcat和netty性能初步对比**，发现Netty性能为有点小优势，其中一点就是Netty是使用零拷贝
+
+# Java内存区域详解
+
+https://javaguide.cn/java/jvm/memory-area.html

@@ -1,3 +1,229 @@
+# Go和Java对比
+
+- 性能：这个是java和go之间对比必须聊到的一个话题，性能一直是java开发经常吐槽的地方。在串行的业务下，java的性能就比Go差，并发业务下，java更比go差远了。这个可能Go比较偏向于C，C++的缘故吧，go的性能可以媲美c，[c++]()。 性能总的来说go和java都是很强的，满足企业级应用开发的需求，非要比较的话go强于java，go得益于可以编译为二进制文件（像c++，cpp），java得益于jvm、jit、以及jdk源码api的优秀设计，但是内存占用小这点go优于java是毋庸置疑的
+
+- 多线程：这个又是Go的一大优势了，个人感觉Go就是为多线程而生的，语法直接支持多线程，使用go语法即可使用多线程。在多线程逻辑实现方面Go也比java更清晰，更简单，这个就是后发语言的优势了，不知道kotlin能不够弥补这个缺点。在性能方面，Go多线程也是碾压java，Go协程相对于传统操作系统中的线程 (thread) 是非常轻量级的，所以Go在多线程方面是比java又快内存占用又小。 
+
+- 生态：这个是java的最大优势，现在go还处于发展阶段，每个新版本出来大家都要抢着升级，因为新功能太重要了，不用不行。就比如包管理功能，从go vendor到go module，都没有java maven强大，但是都不得不用。java新版本出来了，可能不见得会去升级，好多公司现在还在用jdk1.6，因为该有的功能java都已经有了，没必要再去赶潮流。还有java的spring全家桶，虽然go没有spring，不过好在go的web模块功能也还比较强大，虽然没有spring系列方便，但是也足够使用了。 
+  - go语言云原生方面很适合
+    - 有k8s这样优秀的产品的影响下
+      - 之前公司里 go 的业务程序跑 k8s 集群里一个 pod 也就百十兆内存，整个集群看着闲着这么多内存总让人忍不住在里面跑个 redis operator 来吃一下剩余内存，CPU 利用率稍微榨一榨整个集群能搞到百分之五六十。
+      - 现在公司里 java 的业务程序动不动都 -xmx8g -xms8g，即使程序本身用的内存也不一定多少，但堆就已经占上了，内存成了瓶颈，CPU 利用率个位数愁的不行，内存又不敢开超卖。
+      - java方面，8g内存是根据你服务特性来设置的，如果是高并发，低延迟的服务甚至要设置16g（主要留给新生代），代码写好点，jvm的gc是基于弱分带假设的，少搞点1分钟生命周期的对象，控制进老年代的对象，如果是qps很低的服务，你只用256m也没问题。少用些服务不需要的依赖。而go高并发的服务没说要8gb内存
+    - 原生。native，和linux亲和性更近的语言，c系列开发效率较低，go语言亲和linux没得说，直接打包成一个二进制可执行文件，移植性更强。不像java你得提前安一个jvm运行时。一个docker镜像随随便便启动成千上万个应用起来，然后交给k8s调度。
+  - java现阶段方面来说，大数据方面很适合
+
+- 编译，部署：这个对于java来说可能是最轻松的事了吧，在之前的互联网公司的时候，从来没有碰到过部署方面难题，更不用说编译了，本地编译ok，服务器一定更加ok，然后部署放到类似于[阿里云]()这类的云容器上面，一键上线轻轻松松。但是go就不一样了，编译go如同编译C++一样，不同操作系统需要交叉编译，由于依赖服务器的一些环境，所以本地还运行不了Go程序，没办法本地debug，部署更是如同打仗一般，需要写很多python脚本来将编译构建之后部署至docker,k8s上。不太清楚别的使用go的公司是不是这样，对于我来说，编译部署这块内容就如同从天堂掉到了地狱。 
+
+- 语法细节来说
+  - java支持泛型，go好像最近比较新的版本支持了泛型
+  - java支持反编译，所以能诞生这么多优秀的框架，go不支持
+  - go语言函数可以返回多个参数（也可以包括错误），java只能返回一个参数（异常通过抛出的机制），但是java可以通过泛型自定义工具类，实现返回多个对象
+  - go语言通过首字母大小去指定方法和结构体的访问权限，java显示使用public这些字段声明
+  - go语言的接口实现是隐式的，某个包只要实现了接口的全部方法就代表实现了这个接口，java则是显式的实现接口
+  - java测试可以通过junit可以将项目代码和测试代码进行分开，go通过文件加`_test`后缀实现测试，两者功能差不太多，不过我更喜欢测试和项目分开的方式
+  - go语言原生web支持较好，java基于tomcat等servlet服务器去实现web功能，不过java有个Javalin的框架可以像go一样快速搭建web服务器，不过底层还是基于jetty服务器，这点go占优势
+  - java的生态更广，go的话微服务、云原生、区块链这些都挺火的，而java除了这些方向，还可以桌面应用，比如swing、javafx、gui等，go的ide goland就是用java写的，然后java也可以写安卓，所以生态会比go更广一点
+  - 总体项目设计来说，更偏向于java编写项目，无论是写注释还是项目包结构，我个人会感觉java的项目阅读起来感觉比go会好点
+
+# Go的协程调度模型，为什么这么快？
+
+> 本文主要介绍了 Go 程序为了实现极高的并发性能，其内部调度器的实现架构（G-P-M 模型），以及为了最大限度利用计算资源，Go 调度器是如何处理线程阻塞的场景
+
+## **怎么让我们的系统更快**
+
+随着信息技术的迅速发展，单台服务器处理能力越来越强，迫使编程模式由从前的串行模式升级到并发模型。
+
+并发模型包含 IO 多路复用、多进程以及多线程，这几种模型都各有优劣，现代复杂的高并发架构大多是几种模型协同使用，不同场景应用不同模型，扬长避短，发挥服务器的最大性能。
+
+而**多线程，因为其轻量和易用**，成为并发编程中使用频率最高的并发模型，包括后衍生的协程等其他子产品，也都基于它。
+
+## **并发 ≠ 并行**
+
+**并发 (concurrency) 和 并行 ( parallelism) 是不同的。**
+
+在单个 CPU 核上，线程通过时间片或者让出控制权来实现任务切换，达到 "同时" 运行多个任务的目的，这就是所谓的并发。但实际上任何时刻都只有一个任务被执行，其他任务通过某种算法来排队。
+
+多核 CPU 可以让同一进程内的 "多个线程" 做到真正意义上的同时运行，这才是并行。
+
+## **进程、线程、协程**
+
+进程：进程是系统进行资源分配的基本单位，有独立的内存空间。
+
+线程：线程是 CPU 调度和分派的基本单位，线程依附于进程存在，每个线程会共享父进程的资源。
+
+协程：**协程是一种用户态的轻量级线程，**协程的调度完全由用户控制，协程间切换只需要保存任务的上下文，没有内核的开销。
+
+## **线程上下文切换**
+
+由于中断处理，多任务处理，用户态切换等原因会导致 CPU 从一个线程切换到另一个线程，切换过程需要保存当前进程的状态并恢复另一个进程的状态。
+
+**上下文切换的代价是高昂的**，因为在核心上交换线程会花费很多时间。上下文切换的延迟取决于不同的因素，大概在在 50 到 100 纳秒之间。考虑到硬件平均在每个核心上每纳秒执行 12 条指令，那么一次上下文切换可能会花费 600 到 1200 条指令的延迟时间。实际上，上下文切换占用了大量程序执行指令的时间。
+
+如果存在**跨核上下文切换**（Cross-Core Context Switch），可能会导致 CPU 缓存失效（CPU 从缓存访问数据的成本大约 3 到 40 个时钟周期，从主存访问数据的成本大约 100 到 300 个时钟周期），这种场景的切换成本会更加昂贵。
+
+## **Golang 为并发而生**
+
+Golang 从 2009 年正式发布以来，依靠其极高运行速度和高效的开发效率，迅速占据市场份额。Golang 从语言级别支持并发，通过轻量级协程 Goroutine 来实现程序并发运行。
+
+**Goroutine 非常轻量**，主要体现在以下两个方面：
+
+**上下文切换代价小：** Goroutine 上下文切换只涉及到三个寄存器（PC / SP / DX）的值修改；而对比线程的上下文切换则需要涉及模式切换（从用户态切换到内核态）、以及 16 个寄存器、PC、SP…等寄存器的刷新；
+
+**内存占用少：**线程栈空间通常是 2M，Goroutine 栈空间最小 2K；
+
+Golang 程序中可以轻松支持**10w 级别**的 Goroutine 运行，而线程数量达到 1k 时，内存占用就已经达到 2G。
+
+## **Go 调度器实现机制：**
+
+Go 程序通过调度器来调度**Goroutine 在内核线程上执行，**但是 G
+
+- *Goroutine*并不直接绑定 OS 线程 M - *Machine*运行，而是由 Goroutine Scheduler 中的 P - *Processor* （逻辑处理器）来作获取内核线程资源的『中介』。
+
+Go 调度器模型我们通常叫做**G-P-M 模型**，他包括 4 个重要结构，分别是**G、P、M、Sched：**
+
+**G:Goroutine，**每个 Goroutine 对应一个 G 结构体，G 存储 Goroutine 的运行堆栈、状态以及任务函数，可重用。
+
+G 并非执行体，每个 G 需要绑定到 P 才能被调度执行。
+
+**P: Processor，**表示逻辑处理器，对 G 来说，P 相当于 CPU 核，G 只有绑定到 P 才能被调度。对 M 来说，P 提供了相关的执行环境(Context)，如内存分配状态(mcache)，任务队列(G)等。
+
+P 的数量决定了系统内最大可并行的 G 的数量（前提：物理 CPU 核数 >= P 的数量）。
+
+**P 的数量由用户设置的 GoMAXPROCS 决定，但是不论 GoMAXPROCS 设置为多大，P 的数量最大为 256。**
+
+**M: Machine，**OS 内核线程抽象，代表着真正执行计算的资源，在绑定有效的 P 后，进入 schedule 循环；而 schedule 循环的机制大致是从 Global 队列、P 的 Local 队列以及 wait 队列中获取。
+
+**M 的数量是不定的，由 Go Runtime 调整，**为了防止创建过多 OS 线程导致系统调度不过来，目前默认最大限制为 10000 个。
+
+M 并不保留 G 状态，这是 G 可以跨 M 调度的基础。
+
+**Sched：Go 调度器，**它维护有存储 M 和 G 的队列以及调度器的一些状态信息等。
+
+调度器循环的机制大致是从各种队列、P 的本地队列中获取 G，切换到 G 的执行栈上并执行 G 的函数，调用 Goexit 做清理工作并回到 M，如此反复。
+
+**理解 M、P、G 三者的关系，可以通过经典的地鼠推车搬砖的模型来说明其三者关系：**
+
+![img](images/v2-a27259141ff915578ab5165d75432930_720w.jpg)
+
+**地鼠(Gopher)的工作任务是：**工地上有若干砖头，地鼠**借助小车**把砖头运送到火种上去烧制。**M 就可以看作图中的地鼠，P 就是小车，G 就是小车里装的砖。**
+
+弄清楚了它们三者的关系，下面我们就开始重点聊地鼠是如何在搬运砖块的。
+
+**Processor（P）：**
+
+根据用户设置的 **GoMAXPROCS **值来创建一批小车(P)。
+
+**Goroutine(G)：**
+
+通过 Go 关键字就是用来创建一个 Goroutine，也就相当于制造一块砖(G)，然后将这块砖(G)放入当前这辆小车(P)中。
+
+**Machine (M)：**
+
+地鼠(M)不能通过外部创建出来，只能砖(G)太多了，地鼠(M)又太少了，实在忙不过来，**刚好还有空闲的小车(P)没有使用**，那就从别处再借些地鼠(M)过来直到把小车(P)用完为止。
+
+这里有一个地鼠(M)不够用，从别处借地鼠(M)的过程，这个过程就是创建一个内核线程(M)。
+
+**需要注意的是：**地鼠(M) 如果没有小车(P)是没办法运砖的，**小车(P)的数量决定了能够干活的地鼠(M)数量**，在 Go 程序里面对应的是活动线程数；
+
+**在 Go 程序里我们通过下面的图示来展示 G-P-M 模型：**
+
+![img](images/v2-a39b9615c2a4dc7fc3a5af9ff93da828_720w.jpg)
+
+P 代表可以“并行”运行的逻辑处理器，每个 P 都被分配到一个系统线程 M，G 代表 Go 协程。
+
+Go 调度器中有两个不同的运行队列：**全局运行队列(GRQ)和本地运行队列(LRQ)。**
+
+每个 P 都有一个 LRQ，用于管理分配给在 P 的上下文中执行的 Goroutines，这些 Goroutine 轮流被和 P 绑定的 M 进行上下文切换。GRQ 适用于尚未分配给 P 的 Goroutines。
+
+**从上图可以看出，G 的数量可以远远大于 M 的数量，换句话说，Go 程序可以利用少量的内核级线程来支撑大量 Goroutine 的并发。**多个 Goroutine 通过用户级别的上下文切换来共享内核线程 M 的计算资源，但对于操作系统来说并没有线程上下文切换产生的性能损耗。
+
+**为了更加充分利用线程的计算资源，Go 调度器采取了以下几种调度策略：**
+
+**任务窃取（work-stealing）**
+
+我们知道，现实情况有的 Goroutine 运行的快，有的慢，那么势必肯定会带来的问题就是，忙的忙死，闲的闲死，Go 肯定不允许摸鱼的 P 存在，势必要充分利用好计算资源。
+
+为了提高 Go 并行处理能力，调高整体处理效率，当每个 P 之间的 G 任务不均衡时，调度器允许从 GRQ，或者其他 P 的 LRQ 中获取 G 执行。
+
+**减少阻塞**
+
+如果正在执行的 Goroutine 阻塞了线程 M 怎么办？P 上 LRQ 中的 Goroutine 会获取不到调度么？
+
+**在 Go 里面阻塞主要分为一下 4 种场景：**
+
+**场景 1：由于原子、互斥量或通道操作调用导致 Goroutine 阻塞**，调度器将把当前阻塞的 Goroutine 切换出去，重新调度 LRQ 上的其他 Goroutine；
+
+**场景 2：由于网络请求和 IO 操作导致 Goroutine 阻塞**，这种阻塞的情况下，我们的 G 和 M 又会怎么做呢？
+
+Go 程序提供了**网络轮询器（NetPoller）**来处理网络请求和 IO 操作的问题，其后台通过 kqueue（MacOS），epoll（Linux）或 iocp（Windows）来实现 IO 多路复用。
+
+通过使用 NetPoller 进行网络系统调用，调度器可以防止 Goroutine 在进行这些系统调用时阻塞 M。这可以让 M 执行 P 的 LRQ 中其他的 Goroutines，而不需要创建新的 M。有助于减少操作系统上的调度负载。
+
+**下图展示它的工作原理：**G1 正在 M 上执行，还有 3 个 Goroutine 在 LRQ 上等待执行。网络轮询器空闲着，什么都没干。
+
+![img](images/v2-b89070ec76ea9aaf4a3b8107e8f1fe84_720w.jpg)
+
+接下来，G1 想要进行网络系统调用，因此它被移动到网络轮询器并且处理异步网络系统调用。然后，M 可以从
+LRQ 执行另外的 Goroutine。此时，G2 就被上下文切换到 M 上了。
+
+![img](images/v2-62455d37b17ddfe216aa596338cf5e2a_720w.jpg)
+
+最后，异步网络系统调用由网络轮询器完成，G1 被移回到 P 的 LRQ 中。一旦 G1 可以在 M 上进行上下文切换，它负责的 Go 相关代码就可以再次执行。这里的最大优势是，执行网络系统调用不需要额外的 M。网络轮询器使用系统线程，它时刻处理一个有效的事件循环。
+
+![img](images/v2-c9237c70726b41ca722e0b4bf883b553_720w.jpg)
+
+这种调用方式看起来很复杂，值得庆幸的是，**Go 语言将该“复杂性”隐藏在 Runtime 中**：Go 开发者无需关注 socket 是否是 non-block 的，也无需亲自注册文件描述符的回调，只需在每个连接对应的 Goroutine 中以“block I/O”的方式对待 socket 处理即可，**实现了 goroutine-per-connection 简单的网络编程模式**（但是大量的 Goroutine 也会带来额外的问题，比如栈内存增加和调度器负担加重）。
+
+用户层眼中看到的 Goroutine 中的“block socket”，实际上是通过 Go runtime 中的 netpoller 通过 Non-block socket +
+I/O 多路复用机制“模拟”出来的。Go 中的 net 库正是按照这方式实现的。
+
+**场景 3：**当调用一些系统方法的时候，如果系统方法调用的时候发生阻塞，这种情况下，网络轮询器（NetPoller）无法使用，而进行系统调用的 Goroutine 将阻塞当前 M。
+
+让我们来看看同步系统调用（如文件 I/O）会导致 M 阻塞的情况：G1 将进行同步系统调用以阻塞 M1。
+
+![img](images/v2-bc3e58a8f34c24c0229a4add669a3e52_720w.jpg)
+
+调度器介入后：识别出 G1 已导致 M1 阻塞，此时，调度器将 M1 与 P 分离，同时也将 G1 带走。然后调度器引入新的 M2 来服务 P。此时，可以从 LRQ 中选择 G2 并在 M2 上进行上下文切换。
+
+![img](images/v2-9875a8b04b3653e0da8e0794dea7035e_720w.jpg)
+
+阻塞的系统调用完成后：G1 可以移回 LRQ 并再次由 P 执行。如果这种情况再次发生，M1 将被放在旁边以备将来重复使用**。**
+
+![img](images/v2-c0398b611bfcbe16309882a9a59c39d7_720w.jpg)
+
+**场景 4：**如果在 Goroutine 去执行一个 sleep 操作，导致 M 被阻塞了。
+
+Go 程序后台有一个监控线程 sysmon，它监控那些长时间运行的 G 任务然后设置可以强占的标识符，别的 Goroutine 就可以抢先进来执行。
+
+只要下次这个 Goroutine 进行函数调用，那么就会被强占，同时也会保护现场，然后重新放入 P 的本地队列里面等待下次执行。
+
+## **小结**
+
+本文主要从 Go 调度器架构层面上介绍了 G-P-M 模型，通过该模型怎样实现少量内核线程支撑大量 Goroutine 的并发运行。以及通过 NetPoller、sysmon 等帮助 Go 程序减少线程阻塞，充分利用已有的计算资源，从而最大限度提高 Go 程序的运行效率。
+
+# Go 堆栈的理解
+
+https://segmentfault.com/a/1190000017498101
+
+### 变量是堆（heap）还是堆栈（stack）
+
+写过c语言都知道，有明确的堆栈和堆的相关概念。而Go声明语法并没有提到堆栈或堆，只是在[Go的FAQ](https://link.segmentfault.com/?enc=kBZn9CDJV60vibqIxUFSxg%3D%3D.4KL6p9nGNy2YNlqTrk%2FR%2BaN6WLsYAL%2BKHmxhU%2FTxbhU%3D)里面有这么一段解释：
+
+### How do I know whether a variable is allocated on the heap or the stack?
+
+From a correctness standpoint, you don't need to know. Each variable in Go exists as long as there are references to it. The storage location chosen by the implementation is irrelevant to the semantics of the language.
+
+The storage location does have an effect on writing efficient programs. When possible, the Go compilers will allocate variables that are local to a function in that function's stack frame. However, if the compiler cannot prove that the variable is not referenced after the function returns, then the compiler must allocate the variable on the garbage-collected heap to avoid dangling pointer errors. Also, if a local variable is very large, it might make more sense to store it on the heap rather than the stack.
+
+In the current compilers, if a variable has its address taken, that variable is a candidate for allocation on the heap. However, a basic *escape analysis* recognizes some cases when such variables will not live past the return from the function and can reside on the stack.
+
+意思：从正确的角度来看，您不需要知道。Go中的每个变量都存在，只要有对它的引用即可。实现选择的存储位置与语言的语义无关。
+
+存储位置确实会影响编写高效的程序。如果可能，Go编译器将为该函数的堆栈帧中的函数分配本地变量。但是，如果编译器在函数返回后无法证明变量未被引用，则编译器必须在垃圾收集堆上分配变量以避免悬空指针错误。此外，如果局部变量非常大，将它存储在堆而不是堆栈上可能更有意义。
+
+在当前的编译器中，如果变量具有其地址，则该变量是堆上分配的候选变量。但是，基础的逃逸分析可以将那些生存不超过函数返回值的变量识别出来，并且因此可以分配在栈上。
+
 # Go语言设计与实现
 
 https://draveness.me/golang/docs/part2-foundation/ch05-keyword/golang-make-and-new/
