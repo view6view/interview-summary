@@ -2040,3 +2040,396 @@ Netty是基于Java NIO开发的，而Tomcat是Apache下的针对HTTP的服务器
 # Java内存区域详解
 
 https://javaguide.cn/java/jvm/memory-area.html
+
+# 线程安全的List
+
+https://blog.51cto.com/u_15278282/3020917
+
+> synchronizedList()&CopyOnWriteArrayList
+
+在实际项目中，List是我们使用非常频繁的容器，那么如果在并发环境中，我们怎么获取到线程安全的List容器呢？看过前一篇博客《并发容器(一)—线程安全的Map》的朋友，相信大家都知道Collections这样的一个类，使用它我们可以获取线程安全的List容器—Collections.synchronizedList(List<T> list)，但是无论是读取还是写入，它都会进行加锁，当我们并发级别特别高，线程之间在任何操作上都会进行等待，因此在某些场景中它不是最好的选择。在很多的场景中，我们的读取操作可能远远大于写入操作，这时使用这种方式，显然不能让我们满意，那么怎么办呢？别担心，JDK已经为我们考虑好了，为了将读取的性能发挥到极致，提供了CopyOnWriteArrayList类，该类在使用过程中，读读之间不互斥并且更厉害的是读写也不互斥。下面，我们来看看它如何做到的：
+
+```java
+public boolean add(E e) {
+    //获取重入锁
+    final ReentrantLock lock = this.lock;
+    //加锁
+    lock.lock();
+    try {
+        //得到旧数组并获取旧数组的长度
+        Object[] elements = getArray();
+        int len = elements.length;
+        //复制旧数组的元素到新的数组中并且大小在原基础上加1
+        Object[] newElements = Arrays.copyOf(elements, len + 1);
+        //把值插入到新数组中
+        newElements[len] = e;
+        //使用新数组替换老数组
+        setArray(newElements);
+        return true;
+    } finally {
+        //释放锁
+        lock.unlock();
+    }
+}
+```
+
+从源码中，我们可以看出add操作中使用了重入锁，但是此锁只针对写-写操作。为什么读写之间不用互斥，关键就在于添加值的操作并不是直接在原有数组中完成，而是使用原有数组复制一个新的数组，然后将值插入到新的数组中，最后使用新数组替换旧数组，这样插入就完成了。大家可以发现，使用这种方式，在add的过程中旧数组没有得到修改，因此写入操作不影响读取操，另外，数组定义private transient volatile Object[] array，其中采用volatile修饰，保证内存可见性，读取线程可以马上知道这个修改。下面我们来看看读取的操作：
+
+```java
+public E get(int index) {
+    return get(getArray(), index);
+}
+private E get(Object[] a, int index) {
+    return (E) a[index];
+}
+final Object[] getArray() {
+    return array;
+}
+```
+
+读取操作完全没有使用任何的同步控制或者是加锁，这是因为array数组内部结构不会发生任何改变，只会被另外一个array所替换，因此读取是线程安全的。
+
+大家可以使用上面描述的两种方式，来测试结果是否和我们预期的一样。另外关于这两种方式，大家可以测一测它们在读多写少和写多读少情况下的性能有何不同。
+
+# Map和TreeMap
+
+https://blog.csdn.net/qq_44491991/article/details/115472686
+
+# Java double 转 long
+
+```java
+double random = Math.round(Math.random()\*10000); 
+long l = new Double(random).longValue();
+```
+
+# Java 内存泄漏原因、解决办法及泄漏排查
+
+## **1、什么是内存泄漏**
+
+内存泄漏是指无用对象（不再使用的对象）持续占有内存或无用对象的内存得不到及时释放，从而造成内存空间的浪费称为内存泄漏。随着垃圾回收器活动的增加以及内存占用的不断增加，程序性能会逐渐表现出来下降，极端情况下，会引发OutOfMemoryError导致程序崩溃。
+
+## **2、内存泄漏的原因**
+
+JVM 虚拟机是使用引用计数法和可达性分析来判断对象是否可回收，本质是判断一个对象是否还被引用，如果没有引用则回收。在开发的过程中，由于代码的实现不同就会出现很多种内存泄漏问题，让gc 系统误以为此对象还在引用中，无法回收，造成内存泄漏
+
+## **3、内存泄漏有哪些情况**
+
+> 代码中没有及时释放，导致内存无法回收。
+
+下面的代码，因为是双向链表，但是断开的不够彻底，prev节点依然引用这当前正在使用的节点，导致无法回收
+
+```text
+public class ListNode {
+    int val;
+    ListNode next;
+    ListNode prev;
+    ListNode() {
+    }
+    ListNode(int val) {
+        this.val = val;
+    }
+    public ListNode(int val, ListNode next, ListNode prev) {
+        this.val = val;
+        this.next = next;
+        this.prev = prev;
+    }
+    public static void main(String[] args) {
+        ListNode curr = new ListNode(1);
+        ListNode prev = new ListNode(2);
+        ListNode next = new ListNode(3);
+        curr.prev = prev;
+        curr.next = next;
+        curr.prev = null;
+    }
+}
+```
+
+> 资源未关闭造成的内存泄漏
+
+各种连接，如数据库连接、网络连接和IO连接等，文件读写等，可以使用 try-with-resources 读取完文件，自动资源释放
+
+```text
+try (RandomAccessFile raf = new RandomAccessFile(filePath, "r");) {
+        Image image = null;
+while((image = parseImage(raf)) != null){
+            imageList.add(image);
+        }
+        return imageList;
+} catch(Exception e){
+    log.error("parse file error, path: {},", path, e);
+    return null;
+}
+```
+
+> 全局缓存持有的对象不使用的时候没有及时移除，导致一直在内存中无法移除
+
+> 静态集合类
+
+如HashMap、LinkedList等等。如果这些容器为静态的，那么它们的生命周期与程序一致，则容器中的对象在程序结束之前将不能被释放，从而造成内存泄漏。生命周期长的对象持有短生命周期对象的引用，尽管短生命周期的对象不再使用，但是因为长生命周期对象持有它的引用而导致不能被回收。
+
+> 堆外内存无法回收
+
+堆外内存不受gc的管理，可能因为第三方的bug出现内存泄漏
+
+## 4、内存泄漏的解决办法
+
+1.尽量减少使用静态变量，或者使用完及时赋值为 null。
+
+2.明确内存对象的有效作用域，尽量缩小对象的作用域，能用局部变量处理的不用成员变量，因为局部变量弹栈会自动回收；
+
+3.减少长生命周期的对象持有短生命周期的引用；
+
+4.使用StringBuilder和StringBuffer进行字符串连接，Sting和StringBuilder以及StringBuffer等都可以代表字符串，其中String字符串代表的是不可变的字符串，后两者表示可变的字符串。如果使用多个String对象进行字符串连接运算，在运行时可能产生大量临时字符串，这些字符串会保存在内存中从而导致程序性能下降。
+
+5.对于不需要使用的对象手动设置null值，不管GC何时会开始清理，我们都应及时的将无用的对象标记为可被清理的对象；
+
+6.各种连接（数据库连接，网络连接，IO连接）操作，务必显示调用close关闭。
+
+## 5、内存问题排查
+
+没有任何一个程序员想要出现这种问题，但是出现了问题也要解决，内存泄漏的主要表象就是内存不足，内存告警之后如何判断是否有内存泄漏。
+
+### 第一步 首先确认逻辑问题，
+
+查看内存中对象的数量和大小，判断是否在合理的范围，如果在合理的范围内，增大内存配置，调整内存比例就可以了。
+
+命令：
+
+jmap -heap pid
+
+![img](images/v2-58fbf9c9a96d0ec66d945afedb09013d_720w.jpg)
+
+### 第二步：分析gc是否正常执行
+
+命令：
+
+```text
+jstat -gcutil <pid> 1000
+```
+
+![img](images/v2-c9da28309fa06cecb982946949bc69fa_720w.jpg)
+
+```text
+S0 — Heap上的 Survivor space 0 区已使用空间的百分比    
+ 
+S1 — Heap上的 Survivor space 1 区已使用空间的百分比    
+E — Heap上的 Eden space 区已使用空间的百分比    
+O   — Heap上的 Old space 区已使用空间的百分比    
+P   — Perm space 区已使用空间的百分比
+YGC — 从应用程序启动到采样时发生 Young GC 的次数
+YGCT– 从应用程序启动到采样时 Young GC 所用的时间(单位秒)    
+FGC — 从应用程序启动到采样时发生 Full GC 的次数
+FGCT– 从应用程序启动到采样时 Full GC 所用的时间(单位秒)    
+GCT — 从应用程序启动到采样时用于垃圾回收的总时间(单位秒)
+LGCC - 进行GC的原因（低版本jdk可能没有这一列）
+```
+
+从这里观察gc是否异常，也可以根据这个进行jvm内存分配调优，来提高性能降低gc对性能的损耗
+
+### 第三步 确认下版本新增代码的改动，尽快从代码上找出问题。
+
+### 第四步：开启各种命令行和 导出 dump 各种工具分析
+
+```text
+-XX:+HeapDumpOnOutOfMemoryError
+-XX:OnError
+-XX:+ShowMessageBoxOnError
+```
+
+推荐使用jprofile 进行本地分析，可以不用记住那么多命令。
+
+![img](images/v2-ce3168aa49c0b110d84c742e6da3089a_720w.jpg)
+
+## 总结：
+
+现在的服务器内存虽然很大，但是且用且珍惜，不要等到出现问题了才知道后果，在开发中规范自己代码，用完的对象及时释放，减少垃圾对象。出现问题了也不要慌，仔细分析代码，一切都是有原因的。
+
+# Java中的try-with-resources语句
+
+## 介绍
+
+*try-with-resources*是`try`Java中的几条语句之一，旨在减轻开发人员释放`try`块中使用的资源的义务。
+
+它最初是在Java 7中引入的，其背后的全部想法是，开发人员无需担心仅在一个*try-catch-finally*块中使用的资源的资源管理。这是通过消除对`finally`块的需要而实现的，实际上，开发人员仅在关闭资源时才使用块。
+
+此外，使用*try-with-resources的*代码通常更清晰易读，因此使代码更易于管理，尤其是当我们处理许多`try`块时。
+
+## 语法
+
+*try-with-resources*的语法几乎与通常的*try-catch-finally*语法相同。唯一的区别是括号后`try`，我们在其中声明将使用的资源：
+
+```java
+BufferedWriter writer = null;
+try {
+    writer = new BufferedWriter(new FileWriter(fileName));
+    writer.write(str);  // do something with the file we've opened
+} catch (IOException e) {
+   // handle the exception
+} finally {
+    try {
+        if (writer != null)
+            writer.close();
+    } catch (IOException e) {
+       // handle the exception
+    }
+}
+```
+
+使用*try-with-resources*编写的相同代码如下所示：
+
+```java
+try(BufferedWriter writer = new BufferedWriter(new FileWriter(fileName))){
+    writer.write(str); // do something with the file we've opened
+}
+catch(IOException e){
+    // handle the exception
+}
+```
+
+Java理解此代码的方式：
+
+> *在try语句之后在括号中打开的资源仅在此处和现在需要。`.close()`在try块中完成工作后，我将立即调用它们的方法。如果在try块中抛出异常，无论如何我都会关闭这些资源。*
+
+在引入此方法之前，关闭资源是手动完成的，如之前的代码所示。这本质上是样板代码，并且代码库中乱七八糟，从而降低了可读性并使它们难以维护。
+
+在`catch`与`finally`部分*试-与资源*按预期方式工作，与`catch`块处理各自的异常和`finally`不管是否有异常或不执行块。唯一的区别是抑制的异常，这些异常将在本文结尾处进行说明。
+
+**注意**：从Java 9开始，没有必要在*try-with-resources*语句中声明*资源*。我们可以这样做：
+
+```java
+BufferedWriter writer = new BufferedWriter(new FileWriter(fileName));
+try (writer) {
+    writer.write(str); // do something with the file we've opened
+}
+catch(IOException e) {
+    // handle the exception
+}
+```
+
+## Multiple Resources
+
+*try-with-resources的*另一个好方面是添加/删除我们正在使用*的资源*的简便性，同时确保在完成后它们将被关闭。
+
+如果要使用多个文件，则可以在`try()`语句中打开文件，并用分号将它们分开：
+
+
+
+```java
+try (BufferedWriter writer = new BufferedWriter(new FileWriter(fileName));
+    Scanner scanner = new Scanner(System.in)) {
+if (scanner.hasNextLine())
+    writer.write(scanner.nextLine());
+}
+catch(IOException e) {
+    // handle the exception
+}
+```
+
+然后，Java会小心地调用`.close()`我们在中打开的所有资源`try()`。
+
+**注意**：它们以相反的声明顺序关闭，这意味着，在我们的示例中，`scanner`它将在之前关闭`writer`。
+
+## 支持的类
+
+声明的所有资源`try()`必须实现该`AutoCloseable`接口。这些通常是各种类型的编写器，读取器，套接字，输出或输入流等`resource.close()`。使用完所有需要编写的内容。
+
+当然，这包括实现该`AutoClosable`接口的用户定义对象。但是，您很少会遇到想要编写自己的资源的情况。
+
+万一发生这种情况，您需要实现`AutoCloseable`或`Closeable`（仅在此处保持向后兼容性，最好使用`AutoCloseable`）接口并重写该`.close()`方法：
+
+订阅我们的新闻
+在收件箱中获取临时教程，指南和作业。从来没有垃圾邮件。随时退订。
+
+订阅电子报
+订阅
+
+```java
+public class MyResource implements AutoCloseable {
+    @Override
+    public void close() throws Exception {
+        // close your resource in the appropriate way
+    }
+}
+```
+
+## 异常处理
+
+如果从Java *try-with-resources*块中引发异常，则在该块的括号内打开的任何资源`try`仍将自动关闭。
+
+如前所述，*try-with-resources的*工作原理与*try-catch-finally相同*，只是增加了一点点。这种增加称为*抑制异常*。这是**不是**有必要了解为了使用抑制异常*的try-与资源*，但阅读他们可能会为在没有其他似乎调试工作是有用的。
+
+想象一个情况：
+
+- 由于某些原因，*try-with-resources*块中发生异常
+- Java在*try-with-resources*块中停止执行，并调用`.close()`在中声明的所有资源`try()`
+- 其中一种`.close()`方法引发异常
+- `catch`块会“捕获”哪个异常？
+
+这种情况向我们介绍了上述抑制的例外。受抑制的异常是一种异常，当在*try-with-resources*块的隐式finally块中引发该异常时，也可以忽略该异常，如果从该`try`块也引发了异常。
+
+这些异常是`.close()`方法中发生的异常，它们的访问方式不同于“常规”异常。
+
+
+
+重要的是要了解执行顺序为：
+
+1. *资源尝试*块
+2. 最终隐式
+3. 捕获块（如果在[1]和/或[2]中引发了异常）
+4. （明确）终于
+
+例如，这是一个除了抛出异常外什么都不做的资源：
+
+```java
+public static class MyResource implements AutoCloseable {
+    // method throws RuntimeException
+    public void doSomething() {
+        throw new RuntimeException("From the doSomething method");
+    }
+
+    // we'll override close so that it throws an exception in the implicit finally block of try-with-resources (when it attempts to close our resource)
+    @Override
+    public void close() throws Exception {
+        throw new ArithmeticException("I can throw whatever I want, you can't stop me.");
+    }
+}
+
+public static void main(String[] arguments) throws Exception {
+    // declare our resource in try
+    try (MyResource resource = new MyResource()) {
+        resource.doSomething();
+    }
+    catch (Exception e) {
+        System.out.println("Regular exception: " + e.toString());
+
+        // getting the array of suppressed exceptions, and its length
+        Throwable[] suppressedExceptions = e.getSuppressed();
+        int n = suppressedExceptions.length;
+
+        if (n > 0) {
+            System.out.println("We've found " + n + " suppressed exceptions:");
+            for (Throwable exception : suppressedExceptions) {
+                System.out.println(exception.toString());
+            }
+        }
+    }
+}
+```
+
+此代码是可运行的。您可以使用它来尝试使用多个`MyResource`对象，或查看*try-with-resources*不会抛出异常但`.close()`会抛出异常的情况。
+
+**提示**：突然，关闭资源时引发的异常开始变得很重要。
+
+需要特别注意的是，万一尝试关闭资源时引发资源异常，在同一*try-with-resources*块中打开的任何其他资源仍将关闭。
+
+要注意的另一个事实是，在该`try`块没有引发异常的情况下，并且尝试`.close()`使用所使用的资源时引发了多个异常，第**一个**异常将在调用堆栈中传播，而其他异常将被抑制。 。
+
+正如您在代码中看到的那样，您可以通过访问`Throwable`返回的数组来获取所有抑制的异常的列表`Throwable.getSuppressed()`。
+
+请记住，在try块内只能抛出一个异常。引发异常后，将立即退出try块代码，并且Java尝试关闭资源。
+
+## 结论
+
+应尽可能使用*try-with-resources*代替常规*try-catch-finally*。很容易忘记在编码几个小时后关闭您的资源之一，或者在随机激发灵感后忘记关闭刚刚添加到程序中的资源。
+
+该代码更具可读性，更易于更改和维护，并且通常更短。
